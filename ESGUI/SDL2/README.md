@@ -68,3 +68,4 @@ cmake --build .
 - **刷屏函数** `ESGUI_UseCanvasFlush`：将 page-based 帧缓冲转换为 RGB24 并更新 SDL2 纹理
 - **输入处理**：SDL2 键盘事件映射到 ESGUI 事件码
 - **帧缓冲**：使用全屏缓冲（128×64），strip_h=64，整屏刷新
+- **运行统计**：窗口标题每秒更新实际帧率（FPS）和进程常驻内存（RSS）

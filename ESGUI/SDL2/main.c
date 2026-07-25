@@ -28,6 +28,15 @@
 #include <stdio.h>
 #include <string.h>
 
+#if defined(_WIN32)
+#include <windows.h>
+#include <psapi.h>
+#elif defined(__APPLE__)
+#include <mach/mach.h>
+#elif defined(__linux__)
+#include <unistd.h>
+#endif
+
 /* ================================================================
  *  桩头文件：ESGUI 源码依赖 "main.h"，需要让编译器先找到我们的桩
  * ================================================================ */
@@ -309,6 +318,60 @@ static ESGUI_MenuAction_T on_goto_bmp_page(ESGUI_MenuPage_T *page, void *arg) {
 /* ================================================================
  *  SDL2 初始化
  * ================================================================ */
+
+/**
+ * @brief 获取当前模拟器进程的常驻内存（RSS），失败时返回 0
+ */
+static size_t get_process_rss_bytes(void)
+{
+#if defined(_WIN32)
+    PROCESS_MEMORY_COUNTERS counters;
+    if (GetProcessMemoryInfo(GetCurrentProcess(), &counters,
+                             (DWORD)sizeof(counters))) {
+        return (size_t)counters.WorkingSetSize;
+    }
+#elif defined(__APPLE__)
+    mach_task_basic_info_data_t info;
+    mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO,
+                  (task_info_t)&info, &count) == KERN_SUCCESS) {
+        return (size_t)info.resident_size;
+    }
+#elif defined(__linux__)
+    FILE *statm = fopen("/proc/self/statm", "r");
+    long rss_pages = 0;
+    if (statm != NULL) {
+        int matched = fscanf(statm, "%*s%ld", &rss_pages);
+        fclose(statm);
+        if (matched == 1 && rss_pages > 0) {
+            long page_size = sysconf(_SC_PAGESIZE);
+            if (page_size > 0) {
+                return (size_t)rss_pages * (size_t)page_size;
+            }
+        }
+    }
+#endif
+    return 0;
+}
+
+static void update_window_stats(double fps)
+{
+    char title[128];
+    size_t rss_bytes = get_process_rss_bytes();
+    double rss_mib = (double)rss_bytes / (1024.0 * 1024.0);
+
+    if (rss_bytes > 0) {
+        snprintf(title, sizeof(title),
+                 "ESGUI SDL2 Simulator | FPS: %.1f | RSS: %.1f MiB",
+                 fps, rss_mib);
+    } else {
+        snprintf(title, sizeof(title),
+                 "ESGUI SDL2 Simulator | FPS: %.1f | RSS: unavailable",
+                 fps);
+    }
+    SDL_SetWindowTitle(g_window, title);
+}
+
 static int sdl_init(void)
 {
     if (SDL_Init(SDL_INIT_VIDEO) < 0) {
@@ -412,6 +475,8 @@ int main(int argc, char *argv[])
     /* ---- 主循环 ---- */
     int running = 1;
     uint32_t last_tick = SDL_GetTicks();
+    uint32_t stats_start = last_tick;
+    uint32_t stats_frames = 0;
 
     while (running) {
         /* 1. 处理 SDL 事件 */
@@ -449,6 +514,16 @@ int main(int argc, char *argv[])
         SDL_RenderClear(g_renderer);
         SDL_RenderCopy(g_renderer, g_texture, NULL, NULL);
         SDL_RenderPresent(g_renderer);
+
+        stats_frames++;
+        uint32_t stats_now = SDL_GetTicks();
+        uint32_t stats_elapsed = stats_now - stats_start;
+        if (stats_elapsed >= 1000) {
+            double fps = (double)stats_frames * 1000.0 / (double)stats_elapsed;
+            update_window_stats(fps);
+            stats_start = stats_now;
+            stats_frames = 0;
+        }
 
         /* 4. 帧率控制 ~60fps */
         uint32_t elapsed = SDL_GetTicks() - last_tick;

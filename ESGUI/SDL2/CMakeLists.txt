@@ -99,6 +99,11 @@ if(MINGW)
     target_link_options(esgui_sdl2 PRIVATE -mconsole)
 endif()
 
+# Windows 进程常驻内存统计
+if(WIN32)
+    target_link_libraries(esgui_sdl2 PRIVATE psapi)
+endif()
+
 # ================================================================
 #  编译选项
 # ================================================================
