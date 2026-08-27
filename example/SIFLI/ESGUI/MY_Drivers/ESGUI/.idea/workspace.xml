@@ -9,7 +9,7 @@
     </configurations>
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="d7dd5538-c5ad-4e2e-a34b-8bcca2c7abb4" name="更改" comment="" />
+    <list default="true" id="6ba21d9f-df46-4f4a-ab52-dec9fe3a95e4" name="更改" comment="" />
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -32,10 +32,10 @@
     <option name="productBranch" value="Classic" />
   </component>
   <component name="ProjectColorInfo"><![CDATA[{
-  "associatedIndex": 0,
-  "fromUser": false
+  "customColor": "",
+  "associatedIndex": 0
 }]]></component>
-  <component name="ProjectId" id="3I0CQaFNBYXym7kBTF7sHxm5sLK" />
+  <component name="ProjectId" id="3IOrKiEWIudtINwgHziQ3V6emBn" />
   <component name="ProjectViewState">
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
@@ -63,12 +63,12 @@
 }]]></component>
   <component name="TaskManager">
     <task active="true" id="Default" summary="默认任务">
-      <changelist id="d7dd5538-c5ad-4e2e-a34b-8bcca2c7abb4" name="更改" comment="" />
-      <created>1786892083476</created>
+      <changelist id="6ba21d9f-df46-4f4a-ab52-dec9fe3a95e4" name="更改" comment="" />
+      <created>1787646393812</created>
       <option name="number" value="Default" />
       <option name="presentableId" value="Default" />
-      <updated>1786892083476</updated>
-      <workItem from="1786892084484" duration="1000" />
+      <updated>1787646393812</updated>
+      <workItem from="1787646394889" duration="2000" />
     </task>
     <servers />
   </component>

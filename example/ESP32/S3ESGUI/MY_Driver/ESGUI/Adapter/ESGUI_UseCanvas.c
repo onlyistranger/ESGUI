@@ -50,9 +50,14 @@ void ESGUI_CanvasRefresh_CB(ESGUI_T *ui,void *page,void *window) {
         ESGUI_MenuPage_T *menu_page = (ESGUI_MenuPage_T*)page;
         menu_page->vtbl->on_draw(menu_page);
 
-        if (window != ESGUI_NULL) {
-            ((ESGUI_PopWindow_T*)window)->vtbl->on_draw(window);
+        /* 弹窗栈：按 栈底→栈顶 逐层绘制（后画的在上层，覆盖下层弹窗区域；
+         * 各弹窗只填充自己的窗口区域，区域外露出下层弹窗/页面内容） */
+        for (eui_uint8_t i = 0; i < ui->menu_ctrl.pop_depth; i++) {
+            ESGUI_PopWindow_T *pw = ui->menu_ctrl.pop_stack[i];
+            if (pw == ESGUI_NULL || pw->vtbl->on_draw == ESGUI_NULL) continue;
+            pw->vtbl->on_draw((ESGUI_MenuPage_T*)pw);
         }
+        (void)window;   /* 弹窗栈内全部弹窗已在上方逐层绘制，window 参数仅保留签名兼容 */
 
         /* 覆盖层：叠加在页面与弹窗之上（列表顺序即 z-order，先加的在底层） */
         for (eui_uint8_t i = 0; i < ui->overlay_count; i++) {

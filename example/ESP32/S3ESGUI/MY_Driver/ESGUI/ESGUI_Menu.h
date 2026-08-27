@@ -47,8 +47,7 @@ typedef struct {
     void (*on_create)(ESGUI_MenuPage_T *page);      // 分配资源，初始化页面
     void (*on_destroy)(ESGUI_MenuPage_T *page);     // 释放图片、内存等
     void (*on_draw)(ESGUI_MenuPage_T *page); // 绘制背景 + 所有项
-    eui_uint16_t (*special_item_draw)(ESGUI_MenuPage_T *page,eui_uint16_t indx);//特殊条目绘制函数，返回特殊绘制需要的空间(像素)
-    eui_uint16_t (*get_special_item_draw_w)(ESGUI_MenuPage_T *page,eui_uint16_t indx);//获取特殊条目所占宽度函数，返回特殊绘制需要的空间(像素)
+    eui_uint16_t (*special_item_draw)(ESGUI_MenuPage_T *page,eui_uint16_t indx,bool measure);//特殊条目统一接口：measure=true 仅返回占宽（布局/焦点阶段，不绘制）；false 真正绘制并返回占宽（渲染阶段）
     ESGUI_MenuAction_T (*on_input)(ESGUI_MenuPage_T *page, ESGUI_EventCode_t e); // 默认框架处理焦点，特殊情况覆盖
     void (*on_focus_change)(ESGUI_MenuPage_T *page, eui_uint16_t old_idx, eui_uint16_t new_idx); // 焦点变化通知（播放音效、启动动画）
     void (*on_page_chenge)(ESGUI_MenuPage_T *page,ESGUI_MenuAction_T *action);//页面切换回调函数，页面切换时触发
@@ -120,7 +119,9 @@ typedef struct esgui_pop_window {
 typedef struct esgui_menu_ctrl {
     ESGUI_MenuPage_T *page_stack[ESGUI_MAX_MENU_DEPTH];
     eui_uint8_t menu_depth;
-    ESGUI_PopWindow_T *pop_window;
+    /* 弹窗栈：支持多个弹窗叠放，栈顶（pop_stack[pop_depth-1]）接收输入 */
+    ESGUI_PopWindow_T *pop_stack[ESGUI_MAX_POPUP_DEPTH];
+    eui_uint8_t pop_depth;
     ESGUI_EventCode_t last_event;
     eui_uint32_t last_key_tick;
     eui_uint32_t repeat_delay_ms;
@@ -135,6 +136,12 @@ typedef struct esgui_menu_ctrl {
     /* 新增：Push 页面时先让旧页面执行退出动画，再真正压栈 */
     eui_uint8_t pending_push : 1;
     ESGUI_MenuPage_T *pending_push_page;
+
+    /* 延迟动作队列：当前动作（如弹窗滑出动画）完成后再依次执行的排队动作 */
+    ESGUI_MenuAction_T pending_act_queue[ESGUI_MENU_PENDING_ACT_QUEUE_SIZE];
+    eui_uint8_t pending_act_head;   /* 出队位置 */
+    eui_uint8_t pending_act_tail;   /* 入队位置 */
+    eui_uint8_t pending_act_count;  /* 队列中动作数 */
 } ESGUI_MenuCtrl_T;
 
 
@@ -143,6 +150,8 @@ void ESGUI_MenuCtrlPushPage(ESGUI_MenuCtrl_T *emc, ESGUI_MenuPage_T *page); // �
 void ESGUI_MenuCtrlPopPage(ESGUI_MenuCtrl_T *emc);                     // 返回
 void ESGUI_MenuCtrlShowPopWindow(ESGUI_MenuCtrl_T *emc, ESGUI_PopWindow_T *popup); // 显示弹窗（模态）
 void ESGUI_MenuCtrlClosePopWindow(ESGUI_MenuCtrl_T *emc);
+void ESGUI_MenuCtrlQueueAction(ESGUI_MenuCtrl_T *emc, ESGUI_MenuAction_T act);      // 入队延迟动作（当前动作完成后执行）
+void ESGUI_MenuCtrlExecQueuedAction(ESGUI_MenuCtrl_T *emc);                         // 出队执行排队动作（由 ESGUI_Tick 调用）
 void ESGUI_MenuCtrlHandleAction(ESGUI_MenuCtrl_T *emc, ESGUI_MenuAction_T *act);
 
 bool ESGUI_MenuCtrlPreparePopPage(ESGUI_MenuCtrl_T *emc);

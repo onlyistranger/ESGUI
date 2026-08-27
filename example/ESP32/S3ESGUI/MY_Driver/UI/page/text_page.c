@@ -25,16 +25,36 @@ static ESGUI_PopWindow_T pop_window;
 static bool b_val = 0;
 static eui_uint16_t u16_val = 0;
 
+#if ESGUI_ENABLE_KEYBOARD
+//键盘输入弹窗目标缓冲区
+static char kb_text[32];
+#endif
+
+#if ESGUI_ENABLE_MULTILINE_EDIT
+//多行编辑页工作缓冲（直接编辑，返回即保存）
+static ESGUI_MenuPage_T ml_page;
+static char ml_text[128];
+#endif
+
+#if ESGUI_ENABLE_POPUP_LONGTEXT
+//无按钮长文本弹窗演示文本（自动换行 + 滚动浏览）
+static const char long_msg[] =
+    "无按钮长文本弹窗演示。\n"
+    "文本按弹窗宽度自动换行，支持中文 UTF-8 与英文混排，"
+    "换行符 \\n 也生效。右侧有纵向进度条显示当前浏览进度，"
+    "旋转编码器上下滚动浏览全部内容，确定或返回键关闭弹窗。";
+#endif
+
 #if  ESGUI_ENABLE_POPUP_VALUE || ESGUI_ENABLE_POPUP_VALUE_SCROLL_TITLE
 /**
      * @brief 获取当前值的千分比位置
      * @param ctx  用户数据指针
      * @return     0~1000 的千分比，用于进度条显示
      */
-uint16_t ValueDesc_uint16_get_permille(void *ctx) {
+eui_uint16_t ValueDesc_uint16_get_permille(void *ctx) {
     if (ctx == ESGUI_NULL) return 0;
 
-    return  *(uint16_t*)ctx * 1000 / 100;
+    return  *(eui_uint16_t*)ctx * 1000 / 100;
 }
 
 
@@ -47,9 +67,9 @@ uint16_t ValueDesc_uint16_get_permille(void *ctx) {
      *
      * 示例：int 值 → "123"，float → "3.14"，枚举 → "模式A"
      */
-uint8_t ValueDesc_uint16_to_string(void *ctx, char *buf, uint16_t size) {
+eui_uint8_t ValueDesc_uint16_to_string(void *ctx, char *buf, eui_uint16_t size) {
     if (ctx == ESGUI_NULL) return 0;
-    snprintf(buf, size, "%d", *(uint16_t*)ctx);
+    snprintf(buf, size, "%d", *(eui_uint16_t*)ctx);
     return strlen(buf);
 }
 
@@ -64,10 +84,10 @@ uint8_t ValueDesc_uint16_to_string(void *ctx, char *buf, uint16_t size) {
  *
  * 用户在此函数内部实现限幅、循环、步长控制等逻辑
  */
-bool ValueDesc_uint16_step(void *ctx, int8_t direction) {
+bool ValueDesc_uint16_step(void *ctx, eui_int8_t direction) {
     if (ctx == ESGUI_NULL) return false;
 
-    uint16_t val = *((uint16_t*)ctx);
+    eui_uint16_t val = *((eui_uint16_t*)ctx);
 
     if (direction > 0) {
         val += val < 100 ? 1 : 0;
@@ -75,7 +95,7 @@ bool ValueDesc_uint16_step(void *ctx, int8_t direction) {
         val -= val > 0 ? 1 : 0;
     }
 
-    *(uint16_t*)ctx =val;
+    *(eui_uint16_t*)ctx =val;
 
     return true;
 }
@@ -226,17 +246,18 @@ static ESGUI_MenuAction_T message_scroll_window_item_on_enter(ESGUI_MenuPage_T *
 //文本菜单----布尔弹窗条目回调
 static ESGUI_MenuAction_T bool_window_item_on_enter(ESGUI_MenuPage_T *page,void *arg) {
     //创建默认布尔弹窗
-    ESGUI_DefaultBoolPopWindowCreate(&pop_window,"普通布尔弹窗\n  Bool",100,50,arg);
+    ESGUI_DefaultBoolPopWindowCreate(&pop_window,"普通布尔弹窗\n  Bool","确定",ESGUI_NULL,100,50,arg);
     return (ESGUI_MenuAction_T){ACT_SHOW_POPUP,&pop_window};
 }
 #endif
 
 #if ESGUI_ENABLE_POPUP_BMPLIST_SCROLL_TITLE
 //文本菜单----滚动布尔弹窗条目回调
+
 static ESGUI_MenuAction_T bool_scroll_window_item_on_enter(ESGUI_MenuPage_T *page,void *arg) {
     //创建默认布尔弹窗
     // ESGUI_DefaultBoolPopWindowCreate(&pop_window,"  Bool Pop\n  Window",100,50,arg);
-    ESGUI_DefaultBoolScrollTitlePopWindowCreate(&pop_window,"滚动布尔弹窗-----Bool",100,50,arg);
+    ESGUI_DefaultBoolScrollTitlePopWindowCreate(&pop_window,"滚动布尔弹窗-----Bool",ESGUI_NULL,"取消",100,50,arg);
     return (ESGUI_MenuAction_T){ACT_SHOW_POPUP,&pop_window};
 }
 #endif
@@ -248,6 +269,81 @@ static ESGUI_MenuAction_T bool_scroll_window_item_on_enter(ESGUI_MenuPage_T *pag
 static ESGUI_MenuAction_T value_window_item_on_enter(ESGUI_MenuPage_T *page,void *arg) {
     //创建默认值弹窗
     ESGUI_DefaultValuePopWindowCreate(&pop_window,"  普通值弹窗",100,50,&value_desc);
+    return (ESGUI_MenuAction_T){ACT_SHOW_POPUP,&pop_window};
+}
+#endif
+
+#if ESGUI_ENABLE_KEYBOARD
+//文本菜单----键盘输入弹窗条目回调（全宽 + 下半屏高）
+static ESGUI_MenuAction_T keyboard_window_item_on_enter(ESGUI_MenuPage_T *page,void *arg) {
+    (void)page;
+    (void)arg;
+    //创建默认键盘输入弹窗：128 全宽，下半屏 64 高；确定后写入 kb_text
+    ESGUI_DefaultKeyBoardPopWindowCreate(&pop_window,128,64,kb_text,sizeof(kb_text),kb_text);
+    return (ESGUI_MenuAction_T){ACT_SHOW_POPUP,&pop_window};
+}
+#endif
+
+#if ESGUI_ENABLE_MULTILINE_EDIT
+//文本菜单----多行编辑页条目回调
+static ESGUI_MenuAction_T multiline_edit_item_on_enter(ESGUI_MenuPage_T *page,void *arg) {
+    (void)page;
+    (void)arg;
+    //创建多行编辑页：直接编辑 ml_text，BACK/X 返回即保存
+    ESGUI_MultiLineEditPageCreate(&ml_page,"多行编辑",ml_text,sizeof(ml_text),ml_text);
+    return (ESGUI_MenuAction_T){ACT_PUSH_PAGE,&ml_page};
+}
+#endif
+
+#if ESGUI_ENABLE_POPUP_LONGTEXT
+//文本菜单----无按钮长文本弹窗条目回调
+static ESGUI_MenuAction_T longtext_window_item_on_enter(ESGUI_MenuPage_T *page,void *arg) {
+    (void)page;
+    (void)arg;
+    ESGUI_DefaultMessageLongTextPopWindowCreate(&pop_window,long_msg,110,60);
+    return (ESGUI_MenuAction_T){ACT_SHOW_POPUP,&pop_window};
+}
+#endif
+
+#if (ESGUI_ENABLE_POPUP_TEXTLIST && ESGUI_ENABLE_POPUP_MESSAGE)
+//弹窗嵌套演示----第二层弹窗实例（文本列表弹窗，与 pop_window 独立）
+static ESGUI_PopWindow_T pop_window2;
+
+//弹窗嵌套演示----第二层条目：连关两层（先把"关闭第一层"入队，再返回"关闭本层"）
+static ESGUI_MenuAction_T stack_close_all_on_enter(ESGUI_MenuPage_T *page,void *arg) {
+    (void)page;
+    (void)arg;
+    ESGUI_MenuCtrlQueueAction(&ui.menu_ctrl, (ESGUI_MenuAction_T){ACT_CLOSE_POPUP, ESGUI_NULL});
+    return (ESGUI_MenuAction_T){ACT_CLOSE_POPUP, ESGUI_NULL};
+}
+
+//弹窗嵌套演示----第二层（文本列表弹窗）条目
+static ESGUI_MenuItem_T stack_demo_popwindow2_item[] =
+{
+    {0,0,"  连关两层弹窗",ESGUI_NULL,stack_close_all_on_enter,ESGUI_NULL},
+    {0,0,"  只关本层",ESGUI_NULL,ESGUI_NULL,ESGUI_NULL},
+};
+
+//弹窗嵌套演示----第一层条目：打开第二层弹窗
+static ESGUI_MenuAction_T stack_open_second_on_enter(ESGUI_MenuPage_T *page,void *arg) {
+    (void)page;
+    (void)arg;
+    ESGUI_DefaultTextListPopWindowCreate(&pop_window2,100,45,stack_demo_popwindow2_item,ESGUI_ITEM_NUM_COUNT(stack_demo_popwindow2_item));
+    return (ESGUI_MenuAction_T){ACT_SHOW_POPUP,&pop_window2};
+}
+
+//弹窗嵌套演示----第一层（文本列表弹窗）条目
+static ESGUI_MenuItem_T stack_demo_popwindow_item[] =
+{
+    {0,0,"  打开第二层弹窗",ESGUI_NULL,stack_open_second_on_enter,ESGUI_NULL},
+    {0,0,"  关闭本弹窗",ESGUI_NULL,ESGUI_NULL,ESGUI_NULL},
+};
+
+//文本菜单----弹窗嵌套演示条目回调（打开文本列表弹窗，其条目可再开第二层弹窗）
+static ESGUI_MenuAction_T stack_demo_item_on_enter(ESGUI_MenuPage_T *page,void *arg) {
+    (void)page;
+    (void)arg;
+    ESGUI_DefaultTextListPopWindowCreate(&pop_window,110,60,stack_demo_popwindow_item,ESGUI_ITEM_NUM_COUNT(stack_demo_popwindow_item));
     return (ESGUI_MenuAction_T){ACT_SHOW_POPUP,&pop_window};
 }
 #endif
@@ -441,6 +537,22 @@ static ESGUI_MenuItem_T text_menu_item[] =
 
 #if ESGUI_ENABLE_POPUP_VALUE_SCROLL_TITLE
     {0,0,"滚动值弹窗\x03/2",ESGUI_NULL,value_scroll_window_item_on_enter,&u16_val},
+#endif
+
+#if ESGUI_ENABLE_KEYBOARD
+    {0,0,"键盘输入演示",ESGUI_NULL,keyboard_window_item_on_enter,ESGUI_NULL},
+#endif
+
+#if ESGUI_ENABLE_MULTILINE_EDIT
+    {0,0,"多行编辑演示",ESGUI_NULL,multiline_edit_item_on_enter,ESGUI_NULL},
+#endif
+
+#if ESGUI_ENABLE_POPUP_LONGTEXT
+    {0,0,"长文本弹窗演示",ESGUI_NULL,longtext_window_item_on_enter,ESGUI_NULL},
+#endif
+
+#if (ESGUI_ENABLE_POPUP_TEXTLIST && ESGUI_ENABLE_POPUP_MESSAGE)
+    {0,0,"弹窗嵌套演示",ESGUI_NULL,stack_demo_item_on_enter,ESGUI_NULL},
 #endif
 
 

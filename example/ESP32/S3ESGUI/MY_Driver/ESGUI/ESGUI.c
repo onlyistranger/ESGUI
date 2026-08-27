@@ -179,10 +179,11 @@ static void ESGUI_FeedKey_impl(ESGUI_T *ui, ESGUI_EventCode_t key, eui_uint32_t 
 
     ESGUI_MenuAction_T act = {ACT_NONE, ESGUI_NULL};
 
-    /* 1. 收集动作：发给弹窗或栈顶页面 */
-    if (ui->menu_ctrl.pop_window_en && ui->menu_ctrl.pop_window) {
-        if (ui->menu_ctrl.pop_window->vtbl->on_input) {
-            act = ui->menu_ctrl.pop_window->vtbl->on_input((ESGUI_MenuPage_T*)ui->menu_ctrl.pop_window, key);
+    /* 1. 收集动作：发给弹窗栈顶或栈顶页面 */
+    if (ui->menu_ctrl.pop_window_en && ui->menu_ctrl.pop_depth > 0) {
+        ESGUI_PopWindow_T *top_popup = ui->menu_ctrl.pop_stack[ui->menu_ctrl.pop_depth - 1];
+        if (top_popup->vtbl->on_input) {
+            act = top_popup->vtbl->on_input((ESGUI_MenuPage_T*)top_popup, key);
         }
     } else if (ui->menu_ctrl.menu_depth > 0) {
         if (ui->menu_ctrl.page_stack[ui->menu_ctrl.menu_depth - 1]->vtbl->on_input) {
@@ -495,6 +496,12 @@ void ESGUI_Tick(ESGUI_T *ui, eui_uint32_t now_ms) {
         ESGUI_MenuCtrlExecPendingPop(&ui->menu_ctrl);
     }
 
+    /* 2.5 延迟动作队列：当前无待处理动作时出队执行（动作若触发 must_complete
+     * 动画则进入 pending，动画完成后由下一 Tick 续取，天然串行） */
+    if (!ui->menu_ctrl.pending_push && !ui->menu_ctrl.pending_pop) {
+        ESGUI_MenuCtrlExecQueuedAction(&ui->menu_ctrl);
+    }
+
     /* 3. 判断是否需要绘制 */
     eui_uint8_t need = ui->menu_ctrl.need_refresh;
     if (ui->menu_ctrl.menu_depth > 0) {
@@ -526,21 +533,26 @@ void ESGUI_Tick(ESGUI_T *ui, eui_uint32_t now_ms) {
         ESGUI_MenuPage_T *top = ui->menu_ctrl.page_stack[ui->menu_ctrl.menu_depth - 1];
         ESGUI_MenuAction_T act = {ACT_NONE, ESGUI_NULL};
 
-        /* 绘制弹窗（模态覆盖） */
-        if (ui->menu_ctrl.pop_window_en && ui->menu_ctrl.pop_window) {
-            if (ui->menu_ctrl.pop_window->render_ctx == ESGUI_NULL && ui->menu_ctrl.pop_window->vtbl->on_create) {
-                ui->menu_ctrl.pop_window->render_ctx = ui->draw_ctx;
-                ui->menu_ctrl.pop_window->vtbl->on_create((ESGUI_MenuPage_T*)ui->menu_ctrl.pop_window);
+        /* 绘制弹窗栈（模态覆盖）：逐层注入渲染上下文，仅首次渲染的弹窗
+         * 触发 on_create + on_page_chenge(SHOW)，刷新回调按栈底→栈顶逐层绘制 */
+        if (ui->menu_ctrl.pop_window_en && ui->menu_ctrl.pop_depth > 0) {
+            for (eui_uint8_t i = 0; i < ui->menu_ctrl.pop_depth; i++) {
+                ESGUI_PopWindow_T *pw = ui->menu_ctrl.pop_stack[i];
+                if (pw == ESGUI_NULL) continue;
+                if (pw->render_ctx == ESGUI_NULL && pw->vtbl->on_create) {
+                    pw->render_ctx = ui->draw_ctx;
+                    pw->vtbl->on_create((ESGUI_MenuPage_T*)pw);
 
-                act.act = ACT_SHOW_POPUP;
-                act.param = ui->menu_ctrl.pop_window;
-                if (ui->menu_ctrl.pop_window->vtbl->on_page_chenge) {
-                    ui->menu_ctrl.pop_window->vtbl->on_page_chenge((ESGUI_MenuPage_T*)ui->menu_ctrl.pop_window, &act);
+                    act.act = ACT_SHOW_POPUP;
+                    act.param = pw;
+                    if (pw->vtbl->on_page_chenge) {
+                        pw->vtbl->on_page_chenge((ESGUI_MenuPage_T*)pw, &act);
+                    }
+                } else {
+                    pw->render_ctx = ui->draw_ctx;
                 }
-            } else {
-                ui->menu_ctrl.pop_window->render_ctx = ui->draw_ctx;
             }
-            ui->refresh_cb(ui, top, ui->menu_ctrl.pop_window);
+            ui->refresh_cb(ui, top, ui->menu_ctrl.pop_stack[ui->menu_ctrl.pop_depth - 1]);
         } else {
             /* 页面首次渲染时 render_ctx 为 ESGUI_NULL，注入后调用 on_create */
             if (top->render_ctx == ESGUI_NULL && top->vtbl->on_create) {

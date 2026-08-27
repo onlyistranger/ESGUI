@@ -40,6 +40,13 @@
 #if ESGUI_ENABLE_GIF
 #include "ESGUI_GIF.h"
 #endif
+#if ESGUI_ENABLE_KEYBOARD
+#include "ESGUI_KeyBoard.h"
+#include "ESGUI_EditBox.h"
+#endif
+#if ESGUI_ENABLE_MULTILINE_EDIT
+#include "ESGUI_MultiLineEditBox.h"
+#endif
 
 
 #ifndef offsetof
@@ -58,9 +65,9 @@
  * 实际分配/释放函数定义在本文件末尾。
  */
 
-#if (ESGUI_ENABLE_POPUP_MESSAGE || ESGUI_ENABLE_POPUP_BOOL || ESGUI_ENABLE_POPUP_VALUE || ESGUI_ENABLE_POPUP_TEXTLIST || ESGUI_ENABLE_POPUP_BMPLIST)
-static void* popup_data_alloc();   /**< 分配通用弹窗数据内存 */
-static void  popup_data_free();    /**< 释放通用弹窗数据内存 */
+#if (ESGUI_ENABLE_POPUP_MESSAGE || ESGUI_ENABLE_POPUP_BOOL || ESGUI_ENABLE_POPUP_VALUE || ESGUI_ENABLE_POPUP_TEXTLIST || ESGUI_ENABLE_POPUP_BMPLIST || ESGUI_ENABLE_KEYBOARD || ESGUI_ENABLE_POPUP_LONGTEXT)
+static void* popup_data_alloc();   /**< 分配通用弹窗数据内存（弹窗数据池，按槽位分配） */
+static void  popup_data_free(void *ptr);    /**< 释放通用弹窗数据内存（按指针归还槽位） */
 #endif
 
 
@@ -102,7 +109,7 @@ static void anim_cb_trans_level(void *var, eui_int32_t value) {
  * @return     写入的字符数（不含 \0）
  * @note  从高位到低位逐位输出，跳过前导零，确保最小字符串长度
  */
-static eui_uint8_t _int16_to_str(eui_int16_t v, char *out)
+eui_uint8_t _int16_to_str(eui_int16_t v, char *out)
 {
     eui_uint8_t n = 0;
     if (v < 0) { out[n++] = '-'; v = -v; }
@@ -233,6 +240,11 @@ static void calc_visible_range(
     eui_uint16_t item_num, eui_uint16_t buff, eui_uint16_t stay, eui_uint16_t focus_idx,
     eui_uint16_t *out_start, eui_uint16_t *out_end)
 {
+    if (item_num == 0) {            /* 0 条目：无可见条目，防止 end=65535 越界 */
+        *out_start = 0;
+        *out_end   = 0;
+        return;
+    }
     if (item_num <= buff) {
         *out_start = 0;
         *out_end   = item_num - 1;
@@ -482,7 +494,7 @@ static void start_page_transition_anim(ESGUI_MenuPage_T *page)
         eui_uint16_t focus_in_view = focus_idx - first_visible;
         eui_int16_t focus_y = calc_focus_y(target_y, focus_in_view, pd->item_stride);
         eui_uint16_t text_len = get_pure_text_width(page->items[focus_idx].label);
-        eui_int16_t max_text_w = canvas_get_width(page->render_ctx) - (eui_int16_t)pd->text_need_len - 2;
+        eui_int16_t max_text_w = canvas_get_width(page->render_ctx) - (eui_int16_t)pd->text_need_len - 2 - ESGUI_TEXT_RIGHT_GAP;
         eui_int16_t focus_w = (eui_int16_t)(text_len + ESGUI_FOCUS_BOX_PAD_X);
         if (focus_w > max_text_w) focus_w = max_text_w;
         if (focus_w < 0) focus_w = 0;
@@ -577,7 +589,7 @@ static void start_first_in_anim(ESGUI_MenuPage_T *page)
     eui_uint16_t permille = calc_progress_permille(page->focus_idx, page->item_num);
     start_progress_bar_anim(page, permille, 600);
     eui_int16_t focus_w = (eui_int16_t)get_pure_text_width(page->items[0].label) + ESGUI_FOCUS_BOX_PAD_X;
-    eui_int16_t max_text_w = canvas_get_width(c_it) - (eui_int16_t)page_data->text_need_len - 2;
+    eui_int16_t max_text_w = canvas_get_width(c_it) - (eui_int16_t)page_data->text_need_len - 2 - ESGUI_TEXT_RIGHT_GAP;
     if (focus_w > max_text_w) focus_w = max_text_w;
     if (focus_w < 0) focus_w = 0;
     eui_int16_t focus_y = page_data->title_h + ESGUI_TITLE_LINE_OFFSET;
@@ -592,59 +604,36 @@ static void start_first_in_anim(ESGUI_MenuPage_T *page)
 /* ---------- 4.8 特殊条目绘制与宽度计算 ---------- */
 
 /**
- * @brief 获取指定索引条目的特殊标记所占宽度
- * @param page  页面指针
- * @param indx  条目索引
+ * @brief 特殊条目统一接口：测量 + 绘制
+ * @param page    页面指针
+ * @param indx    条目索引
+ * @param measure true=仅返回占宽（布局/焦点阶段调用，不绘制）；false=真正绘制并返回占宽（渲染阶段调用）
  * @return 特殊标记所需宽度（像素），无标记返回 0
- * @note  支持的标记类型：
- *        '0' → 方形复选框（宽 10px）
- *        '1' → 圆形单选框（宽 10px）
- *        '2' → 数值显示（宽 20px）
- */
-eui_uint16_t esgui_text_menu_defalt_get_special_item_draw_w(ESGUI_MenuPage_T *page, eui_uint16_t indx)
-{
-    if (page == ESGUI_NULL) return 0;
-    (void)page;
-    char c;
-    if (ESGUI_WidgetCheckMarker(page->items[indx].label, ESGUI_WIDGET_DEFAULT_MARK, ESGUI_NULL, &c)) {
-        switch (c) {
-            case '2': return 20;
-            default:  return 0;
-        }
-    }
-    return 0;
-}
-
-/**
- * @brief 绘制指定索引条目的特殊标记图形
- * @param page  页面指针
- * @param indx  条目索引
- * @return 实际占用的宽度（像素），无标记返回 0
  * @note  在条目右侧（进度条左侧）绘制标记图形。
  *        复选框/单选框状态由标记字符决定，数值由 items[indx].arg 指向的 eui_int16_t 提供。
  */
-eui_uint16_t esgui_text_menu_defalt_special_item_draw(ESGUI_MenuPage_T *page, eui_uint16_t indx)
+eui_uint16_t esgui_text_menu_defalt_special_item_draw(ESGUI_MenuPage_T *page, eui_uint16_t indx, bool measure)
 {
     if (page == ESGUI_NULL) return 0;
-    CanvasStripIter *c_it = page->render_ctx;
     char c;
-    eui_uint16_t pure_len;
-    if (!ESGUI_WidgetCheckMarker(page->items[indx].label, ESGUI_WIDGET_DEFAULT_MARK, &pure_len, &c)) {
+    if (!ESGUI_WidgetCheckMarker(page->items[indx].label, ESGUI_WIDGET_DEFAULT_MARK, ESGUI_NULL, &c)) {
         return 0;
     }
-    eui_int16_t x_base = canvas_get_width(c_it) - ESGUI_PROGRESS_BAR_W;
     switch (c) {
-        case '2': {
-            char buff[10] = {0};
-            _int16_to_str(*(eui_int16_t*)page->items[indx].arg, buff);
-            eui_draw_text(c_it->canvas,
-                x_base - 15,
-                page->items[indx].y,
-                &ESGUI_DEFAULT_FONT,
-                buff,
-                EUI_MODE_SET);
+        case '2':
+            if (measure) return 20;                 /* 测量模式：仅返回占宽，不绘制 */
+            {
+                CanvasStripIter *c_it = page->render_ctx;
+                char buff[10] = {0};
+                _int16_to_str(*(eui_int16_t*)page->items[indx].arg, buff);
+                eui_draw_text(c_it->canvas,
+                    canvas_get_width(c_it) - ESGUI_PROGRESS_BAR_W - 15,
+                    page->items[indx].y,
+                    &ESGUI_DEFAULT_FONT,
+                    buff,
+                    EUI_MODE_SET);
+            }
             return 20;
-        }
         default:
             return 0;
     }
@@ -660,9 +649,11 @@ eui_uint16_t esgui_text_menu_defalt_special_item_draw(ESGUI_MenuPage_T *page, eu
  *        初始化过渡动画状态（trans_count=0, trans_active=0, first_push=1）。
  *        此函数在页面首次被渲染前由 ESGUI_Tick 调用。
  */
+static void esgui_text_menu_recenter(ESGUI_MenuPage_T *page, bool animate);   /* 前置声明：on_create 按焦点初始化布局 */
 void esgui_text_menu_defalt_on_create(ESGUI_MenuPage_T *page)
 {
     if (page == ESGUI_NULL) return;
+    if (page->item_num == 0) return;    /* 0 条目：不做任何操作 */
     ESGUI_DEFALT_TEXT_PAGE_DATA_T *data = text_page_data_alloc();
     if (data == ESGUI_NULL) return;
     page->draw_data = data;
@@ -679,6 +670,11 @@ void esgui_text_menu_defalt_on_create(ESGUI_MenuPage_T *page)
     data->buff = (eui_uint16_t)(content_h / data->item_stride);
     data->stay = (data->buff + 1) / 2;
 
+    /* 支持手动指定 focus_idx：越界保护 */
+    if (page->focus_idx >= page->item_num) {
+        page->focus_idx = (eui_uint16_t)(page->item_num - 1);
+    }
+
     /* 初始化初始焦点条目的文本指标（等效于首次 on_focus_change）：
      * 保证首条即为长文本时（focus_idx=0），进入页面即可识别并启动环形滚动 */
     eui_uint16_t focus_idx = page->focus_idx;
@@ -686,12 +682,12 @@ void esgui_text_menu_defalt_on_create(ESGUI_MenuPage_T *page)
     data->text_len = text_len;
 
     eui_uint16_t need_len = ESGUI_PROGRESS_BAR_W;
-    if (page->vtbl->get_special_item_draw_w != ESGUI_NULL) {
-        need_len += page->vtbl->get_special_item_draw_w(page, focus_idx);
+    if (page->vtbl->special_item_draw != ESGUI_NULL) {
+        need_len += page->vtbl->special_item_draw(page, focus_idx, true);   /* measure=true：仅测宽，不绘制 */
     }
     data->text_need_len = need_len;
 
-    eui_int16_t max_text_w = canvas_get_width(c_it) - (eui_int16_t)need_len - 2;
+    eui_int16_t max_text_w = canvas_get_width(c_it) - (eui_int16_t)need_len - 2 - ESGUI_TEXT_RIGHT_GAP;
     data->flags = (data->flags & ~(FLAG_FOCUS_LONG_TEXT))
                 | ((text_len > (eui_uint16_t)max_text_w) ? FLAG_FOCUS_LONG_TEXT : 0);
 
@@ -699,6 +695,9 @@ void esgui_text_menu_defalt_on_create(ESGUI_MenuPage_T *page)
     data->trans_count = 0;
     data->trans_active = 0;
     data->first_push = 1;
+
+    /* 支持手动指定 focus_idx：按焦点无动画直接落位（焦点框/列表滚动/进度条） */
+    esgui_text_menu_recenter(page, false);
 }
 
 /**
@@ -716,7 +715,7 @@ void esgui_text_menu_defalt_on_destroy(ESGUI_MenuPage_T *page)
         anim_stop_all(&data->focus_box_w);
         anim_stop_all(&data->focus_box_y);
         anim_stop_all(&data->line_len);
-        anim_stop_all(&page->items[0].y);
+        if (page->items != ESGUI_NULL) anim_stop_all(&page->items[0].y);
         anim_stop_all(&data->trans_count);  /* 停止可能正在运行的过渡动画 */
         text_page_data_free(page->draw_data);
         page->draw_data = ESGUI_NULL;
@@ -737,14 +736,18 @@ void esgui_text_menu_defalt_on_destroy(ESGUI_MenuPage_T *page)
  *        5. 若 old_idx == new_idx（Pop 恢复），启动百叶窗淡入
  */
 /**
- * @brief 文本菜单焦点重定位（无过渡动画）
- * @param page 页面指针
- * @note  重算焦点条目的纯文本宽度/特殊标记宽度、焦点框与列表滚动位置
- *        并启动对应动画。由 on_focus_change 与 on_relayout（运行时增删条目）共用。
+ * @brief 文本菜单焦点重定位
+ * @param page    页面指针
+ * @param animate true=焦点切换（on_focus_change）：焦点框/列表/进度条启动过渡动画，
+ *                长文本滚动从头开始；
+ *                false=内容重排（on_relayout：弹窗关闭/运行时增删条目）：
+ *                直接落位不播动画，长文本滚动保持当前位置。
+ * @note  重算焦点条目的纯文本宽度/特殊标记宽度、焦点框与列表滚动位置。
  */
-static void esgui_text_menu_recenter(ESGUI_MenuPage_T *page)
+static void esgui_text_menu_recenter(ESGUI_MenuPage_T *page, bool animate)
 {
     if (page == ESGUI_NULL || page->draw_data == ESGUI_NULL || page->render_ctx == ESGUI_NULL) return;
+    if (page->item_num == 0) return;    /* 0 条目：不做任何操作 */
     CanvasStripIter *c_it = page->render_ctx;
     ESGUI_DEFALT_TEXT_PAGE_DATA_T *pd = page->draw_data;
     const esgui_page_vtable_t *vtbl = page->vtbl;
@@ -756,12 +759,12 @@ static void esgui_text_menu_recenter(ESGUI_MenuPage_T *page)
     pd->text_len = text_len;
 
     eui_uint16_t need_len = ESGUI_PROGRESS_BAR_W;
-    if (vtbl->get_special_item_draw_w != ESGUI_NULL) {
-        need_len += vtbl->get_special_item_draw_w(page, focus_idx);
+    if (vtbl->special_item_draw != ESGUI_NULL) {
+        need_len += vtbl->special_item_draw(page, focus_idx, true);         /* measure=true：仅测宽，不绘制 */
     }
     pd->text_need_len = need_len;
 
-    eui_int16_t max_text_w = canvas_w - (eui_int16_t)need_len - 2;
+    eui_int16_t max_text_w = canvas_w - (eui_int16_t)need_len - 2 - ESGUI_TEXT_RIGHT_GAP;
     pd->flags = (pd->flags & ~(FLAG_FOCUS_LONG_TEXT))
               | ((text_len > (eui_uint16_t)max_text_w) ? FLAG_FOCUS_LONG_TEXT : 0);
 
@@ -774,7 +777,23 @@ static void esgui_text_menu_recenter(ESGUI_MenuPage_T *page)
     eui_uint16_t focus_in_view = focus_idx - first_visible;
     eui_int16_t focus_y = calc_focus_y(top_y, focus_in_view, pd->item_stride);
 
-    if (item_num <= pd->buff) {
+    if (!animate) {
+        /* 重排模式：无动画直接落位，避免弹窗关闭/增删条目时焦点框与列表跳动 */
+        if (item_num > pd->buff) {
+            if (focus_idx >= pd->stay) {
+                first_visible = calc_first_visible_for_focus(item_num, pd->buff, pd->stay, focus_idx);
+                anim_stop_all(&page->items[0].y);
+                page->items[0].y = calc_list_y(top_y, first_visible, pd->item_stride);
+            } else {
+                anim_stop_all(&page->items[0].y);
+                page->items[0].y = top_y;
+            }
+        }
+        anim_stop_all(&pd->focus_box_w);
+        anim_stop_all(&pd->focus_box_y);
+        pd->focus_box_w = focus_w;
+        pd->focus_box_y = focus_y;
+    } else if (item_num <= pd->buff) {
         /* 条目少，全部可见，只移动焦点框 */
         start_focus_box_anim(page, focus_w, focus_y, 400);
     } else if (focus_idx < pd->stay) {
@@ -794,13 +813,21 @@ static void esgui_text_menu_recenter(ESGUI_MenuPage_T *page)
         start_focus_box_anim(page, focus_w, focus_y, 400);
     }
 
-    /* 重置长文本滚动状态 */
-    pd->long_text_x = ESGUI_TEXT_MARGIN_X;
-    pd->flags &= ~FLAG_LONG_TEXT_ANIM;
-    anim_stop_all(&pd->long_text_x);
+    if (animate) {
+        /* 焦点切换：长文本滚动从头开始 */
+        pd->long_text_x = ESGUI_TEXT_MARGIN_X;
+        pd->flags &= ~FLAG_LONG_TEXT_ANIM;
+        anim_stop_all(&pd->long_text_x);
+    }
+    /* 重排模式：保持长文本当前滚动位置（on_draw 按 FLAG 变化自行启停） */
 
     eui_uint16_t permille = calc_progress_permille(focus_idx, item_num);
-    start_progress_bar_anim(page, permille, 300);
+    if (animate) {
+        start_progress_bar_anim(page, permille, 300);
+    } else {
+        anim_stop_all(&pd->progress_bar_permille);
+        pd->progress_bar_permille = permille;
+    }
 }
 
 /**
@@ -816,7 +843,8 @@ void esgui_text_menu_defalt_on_focus_change(ESGUI_MenuPage_T *page, eui_uint16_t
     (void)old_idx;
     (void)new_idx;
     if (page == ESGUI_NULL || page->draw_data == ESGUI_NULL) return;
-    esgui_text_menu_recenter(page);
+    if (page->item_num == 0) return;    /* 0 条目：不做任何操作 */
+    esgui_text_menu_recenter(page, true);
 
     /* Pop 恢复后（old == new 来自 ExecPendingPop）启动百叶窗淡入 */
     if (old_idx == new_idx) {
@@ -834,11 +862,11 @@ void esgui_text_menu_defalt_on_focus_change(ESGUI_MenuPage_T *page, eui_uint16_t
  *        由 ESGUI_ENABLE_MENU_RUNTIME_ITEMS 控制（0=整套剔除）。
  */
 #if ESGUI_ENABLE_MENU_RUNTIME_ITEMS
-static void esgui_text_menu_relayout(ESGUI_MenuPage_T *page, eui_uint16_t old_focus, eui_uint16_t new_focus)
+void esgui_text_menu_relayout(ESGUI_MenuPage_T *page, eui_uint16_t old_focus, eui_uint16_t new_focus)
 {
     (void)old_focus;
     (void)new_focus;
-    esgui_text_menu_recenter(page);
+    esgui_text_menu_recenter(page, false);
 }
 #endif /* ESGUI_ENABLE_MENU_RUNTIME_ITEMS */
 
@@ -853,6 +881,10 @@ static void esgui_text_menu_relayout(ESGUI_MenuPage_T *page, eui_uint16_t old_fo
 ESGUI_MenuAction_T esgui_menu_defalt_on_input(ESGUI_MenuPage_T *page, ESGUI_EventCode_t e)
 {
     if (page == ESGUI_NULL) return (ESGUI_MenuAction_T){ACT_NONE, ESGUI_NULL};
+    if (page->item_num == 0) {
+        if (e == EVT_KEY_BACK) return (ESGUI_MenuAction_T){ACT_POP_PAGE, ESGUI_NULL};  /* 0 条目：仅允许返回退出 */
+        return (ESGUI_MenuAction_T){ACT_NONE, ESGUI_NULL};                              /* 其余按键不做任何操作 */
+    }
 
     /* 过渡动画期间屏蔽按键，防止长按重复触发 Pop */
     ESGUI_DEFALT_TEXT_PAGE_DATA_T *pd = page->draw_data;
@@ -901,6 +933,7 @@ ESGUI_MenuAction_T esgui_menu_defalt_on_input(ESGUI_MenuPage_T *page, ESGUI_Even
 void esgui_text_menu_defalt_on_draw(ESGUI_MenuPage_T *page)
 {
     if (page == ESGUI_NULL || page->draw_data == ESGUI_NULL) return;
+    if (page->item_num == 0) return;    /* 0 条目：不做任何操作 */
 
     CanvasStripIter *c_it = (CanvasStripIter *)page->render_ctx;
     ESGUI_DEFALT_TEXT_PAGE_DATA_T *pd = (ESGUI_DEFALT_TEXT_PAGE_DATA_T *)page->draw_data;
@@ -946,9 +979,9 @@ void esgui_text_menu_defalt_on_draw(ESGUI_MenuPage_T *page)
 
         eui_uint16_t need_len = ESGUI_PROGRESS_BAR_W;
         if (has_special) {
-            need_len += vtbl->special_item_draw(page, i);
+            need_len += vtbl->special_item_draw(page, i, false);            /* measure=false：真正绘制 */
         }
-        eui_int16_t item_max_w = canvas_w - (eui_int16_t)need_len;
+        eui_int16_t item_max_w = canvas_w - (eui_int16_t)need_len - ESGUI_TEXT_RIGHT_GAP;
 
         if (i == focus_idx && (pd->flags & FLAG_FOCUS_LONG_TEXT)) {
             /* 长文本焦点条目：绘制两段文本实现环形滚动效果 */
@@ -964,7 +997,7 @@ void esgui_text_menu_defalt_on_draw(ESGUI_MenuPage_T *page)
                 &ESGUI_DEFAULT_FONT, page->items[i].label, EUI_MODE_SET, w1);
 
             eui_int32_t text_plus_x = (eui_int32_t)cached_text_len + (eui_int32_t)long_text_x;
-            eui_int16_t text_area_right = canvas_w - (eui_int16_t)need_len;
+            eui_int16_t text_area_right = canvas_w - (eui_int16_t)need_len - ESGUI_TEXT_RIGHT_GAP;
             eui_int16_t remain = text_area_right - (eui_int16_t)text_plus_x;
             if (remain >= ESGUI_LONG_TEXT_GAP) {
                 eui_int16_t X2 = long_text_x + (eui_int16_t)cached_text_len + ESGUI_LONG_TEXT_GAP + 2;
@@ -1014,6 +1047,7 @@ void esgui_text_menu_defalt_on_draw(ESGUI_MenuPage_T *page)
  */
 void esgui_text_menu_default_on_page_change(ESGUI_MenuPage_T *page, ESGUI_MenuAction_T *action) {
     if (page == ESGUI_NULL || action == ESGUI_NULL) return;
+    if (page->item_num == 0) return;    /* 0 条目：不做任何操作 */
     ESGUI_DEFALT_TEXT_PAGE_DATA_T *pd = page->draw_data;
     switch (action->act) {
         case ACT_PUSH_PAGE:
@@ -1048,7 +1082,6 @@ static const esgui_page_vtable_t s_default_text_vtable = {
     .on_focus_change          = esgui_text_menu_defalt_on_focus_change,
     .on_input                 = esgui_menu_defalt_on_input,
     .special_item_draw        = esgui_text_menu_defalt_special_item_draw,
-    .get_special_item_draw_w  = esgui_text_menu_defalt_get_special_item_draw_w,
     .on_page_chenge           = esgui_text_menu_default_on_page_change,
 #if ESGUI_ENABLE_MENU_RUNTIME_ITEMS
     .on_relayout              = esgui_text_menu_relayout,
@@ -1092,7 +1125,7 @@ void ESGUI_DefaltTextMenuCreate(ESGUI_MenuPage_T *page,
  * @param page 页面指针
  * @note  先调用静态销毁（内部会访问 items[0] 停动画），再释放条目数组。
  */
-static void esgui_dynamic_text_menu_on_destroy(ESGUI_MenuPage_T *page)
+void esgui_dynamic_text_menu_on_destroy(ESGUI_MenuPage_T *page)
 {
     if (page == ESGUI_NULL) return;
     esgui_text_menu_defalt_on_destroy(page);
@@ -1114,7 +1147,6 @@ static const esgui_page_vtable_t s_dynamic_text_vtable = {
     .on_focus_change          = esgui_text_menu_defalt_on_focus_change,
     .on_input                 = esgui_menu_defalt_on_input,
     .special_item_draw        = esgui_text_menu_defalt_special_item_draw,
-    .get_special_item_draw_w  = esgui_text_menu_defalt_get_special_item_draw_w,
     .on_page_chenge           = esgui_text_menu_default_on_page_change,
 #if ESGUI_ENABLE_MENU_RUNTIME_ITEMS
     .on_relayout              = esgui_text_menu_relayout,
@@ -1244,6 +1276,7 @@ static const Bitmap *bmp_item_bitmap(ESGUI_MenuPage_T *page, eui_uint16_t idx,
 static void esgui_bmp_menu_recompute_layout(ESGUI_MenuPage_T *page, ESGUI_DEFAULT_BMP_MENU_DAT *dat)
 {
     if (page == ESGUI_NULL || dat == ESGUI_NULL) return;
+    if (page->item_num == 0) return;    /* 0 条目：不做任何操作 */
 #if ESGUI_ENABLE_GIF
     /* 先扫描 GIF 条目（名称末尾带 "\x03/7" 标记，类型字符 '7'）：
      * 仅记录"是/否 GIF"，帧数组与帧间隔由条目 icon 指向的 ESGUI_GIF_T
@@ -1290,6 +1323,7 @@ static void esgui_bmp_menu_recompute_layout(ESGUI_MenuPage_T *page, ESGUI_DEFAUL
  */
 void esgui_bmp_menu_defalt_on_create(ESGUI_MenuPage_T *page) {
     if (page == ESGUI_NULL || page->render_ctx == ESGUI_NULL) return;
+    if (page->item_num == 0) return;    /* 0 条目：不做任何操作 */
     ESGUI_DEFAULT_BMP_MENU_DAT *dat = bmp_page_data_alloc();
     if (dat == ESGUI_NULL) return;
     page->draw_data = dat;
@@ -1324,7 +1358,7 @@ void esgui_bmp_menu_defalt_on_destroy(ESGUI_MenuPage_T *page) {
     if (page == ESGUI_NULL) return;
     ESGUI_DEFAULT_BMP_MENU_DAT *dat = page->draw_data;
     if (dat != ESGUI_NULL) {
-        anim_stop_all(&page->items[0].x);
+        if (page->items != ESGUI_NULL) anim_stop_all(&page->items[0].x);
         anim_stop_all(&dat->progress_bar_per);
         anim_stop_all(&dat->line_len);
         anim_stop_all(&dat->label_anim_y);
@@ -1414,6 +1448,10 @@ static void start_bmp_page_exit_anim(ESGUI_MenuPage_T *page)
 ESGUI_MenuAction_T esgui_bmp_defalt_on_input(ESGUI_MenuPage_T *page, ESGUI_EventCode_t e)
 {
     if (page == ESGUI_NULL) return (ESGUI_MenuAction_T){ACT_NONE, ESGUI_NULL};
+    if (page->item_num == 0) {
+        if (e == EVT_KEY_BACK) return (ESGUI_MenuAction_T){ACT_POP_PAGE, ESGUI_NULL};  /* 0 条目：仅允许返回退出 */
+        return (ESGUI_MenuAction_T){ACT_NONE, ESGUI_NULL};                              /* 其余按键不做任何操作 */
+    }
 
     /* 过渡动画期间屏蔽按键 */
     ESGUI_DEFAULT_BMP_MENU_DAT *dat = page->draw_data;
@@ -1473,6 +1511,7 @@ ESGUI_MenuAction_T esgui_bmp_defalt_on_input(ESGUI_MenuPage_T *page, ESGUI_Event
 static void esgui_bmp_menu_recenter(ESGUI_MenuPage_T *page)
 {
     if (page == ESGUI_NULL || page->draw_data == ESGUI_NULL || page->render_ctx == ESGUI_NULL) return;
+    if (page->item_num == 0) return;    /* 0 条目：不做任何操作 */
     ESGUI_DEFAULT_BMP_MENU_DAT *dat = page->draw_data;
     CanvasStripIter *c_it = page->render_ctx;
     eui_uint16_t canvas_w = canvas_get_width(c_it);
@@ -1544,6 +1583,7 @@ void esgui_bmp_menu_defalt_on_focus_change(ESGUI_MenuPage_T *page, eui_uint16_t 
     (void)old_idx;
     (void)new_idx;
     if (page == ESGUI_NULL || page->draw_data == ESGUI_NULL || page->render_ctx == ESGUI_NULL) return;
+    if (page->item_num == 0) return;    /* 0 条目：不做任何操作 */
     esgui_bmp_menu_recenter(page);
 
     /* Pop 恢复后启动百叶窗淡入 */
@@ -1567,6 +1607,7 @@ static void esgui_bmp_menu_relayout(ESGUI_MenuPage_T *page, eui_uint16_t old_foc
     (void)old_focus;
     (void)new_focus;
     if (page == ESGUI_NULL || page->draw_data == ESGUI_NULL) return;
+    if (page->item_num == 0) return;    /* 0 条目：不做任何操作 */
     ESGUI_DEFAULT_BMP_MENU_DAT *dat = page->draw_data;
     anim_stop_all(&page->items[0].x);       /* 停止进行中的横向滚动，避免与新布局冲突 */
     esgui_bmp_menu_recompute_layout(page, dat);
@@ -1584,6 +1625,7 @@ static void esgui_bmp_menu_relayout(ESGUI_MenuPage_T *page, eui_uint16_t old_foc
  */
 void esgui_bmp_menu_default_on_page_change(ESGUI_MenuPage_T *page, ESGUI_MenuAction_T *action) {
     if (page == ESGUI_NULL || action == ESGUI_NULL || page->draw_data == ESGUI_NULL || page->render_ctx == ESGUI_NULL) return;
+    if (page->item_num == 0) return;    /* 0 条目：不做任何操作 */
     ESGUI_DEFAULT_BMP_MENU_DAT *dat = page->draw_data;
     CanvasStripIter *c_it = page->render_ctx;
     eui_uint16_t canvas_w = canvas_get_width(c_it);
@@ -1671,6 +1713,7 @@ void esgui_bmp_menu_default_on_page_change(ESGUI_MenuPage_T *page, ESGUI_MenuAct
  */
 void esgui_bmp_menu_defalt_on_draw(ESGUI_MenuPage_T *page) {
     if (page == ESGUI_NULL || page->draw_data == ESGUI_NULL || page->render_ctx == ESGUI_NULL) return;
+    if (page->item_num == 0) return;    /* 0 条目：不做任何操作 */
     CanvasStripIter *c_it = page->render_ctx;
     ESGUI_DEFAULT_BMP_MENU_DAT *dat = page->draw_data;
     eui_uint16_t canvas_w = canvas_get_width(c_it);
@@ -1723,7 +1766,7 @@ void esgui_bmp_menu_defalt_on_draw(ESGUI_MenuPage_T *page) {
         if (i < ESGUI_BMP_MENU_MAX_ITEMS && dat->gif_is[i]) {
             /* GIF 条目：绘制交给 special_item_draw
              *（选中→循环播放，未选中→第 0 帧） */
-            esgui_bmp_menu_defalt_special_item_draw(page, i);
+            esgui_bmp_menu_defalt_special_item_draw(page, i, false);
         } else
 #endif /* ESGUI_ENABLE_GIF */
         {
@@ -1789,27 +1832,11 @@ void esgui_bmp_menu_defalt_on_draw(ESGUI_MenuPage_T *page) {
  * 菜单本身不重复记录任何播放参数。 */
 
 /**
- * @brief 获取 BMP 菜单特殊条目（GIF）所占宽度
- * @param page 页面指针
- * @param indx 条目索引
+ * @brief 特殊条目统一接口：测量 + 绘制（GIF：名称末尾带 "\x03/7" 标记的项）
+ * @param page    页面指针
+ * @param indx    条目索引
+ * @param measure true=仅返回占宽（第 0 帧宽，布局/查询阶段，不绘制）；false=真正绘制并返回占宽
  * @return GIF 条目返回第 0 帧宽度（像素）；非 GIF 条目返回 0
- * @note  供布局预留/查询使用；BMP 菜单布局本身按第 0 帧尺寸计算，
- *        因此本函数仅作为信息查询，不影响排列。
- */
-eui_uint16_t esgui_bmp_menu_defalt_get_special_item_draw_w(ESGUI_MenuPage_T *page, eui_uint16_t indx)
-{
-    if (page == ESGUI_NULL || page->draw_data == ESGUI_NULL || indx >= page->item_num) return 0;
-    ESGUI_DEFAULT_BMP_MENU_DAT *dat = page->draw_data;
-    if (indx >= ESGUI_BMP_MENU_MAX_ITEMS || dat->gif_is[indx] == 0) return 0;
-    const ESGUI_GIF_T *g = (const ESGUI_GIF_T *)page->items[indx].icon;
-    return (g != ESGUI_NULL && g->frames != ESGUI_NULL) ? (eui_uint16_t)g->frames[0].w : 0;
-}
-
-/**
- * @brief 绘制 BMP 菜单特殊条目（GIF）：名称末尾带 "\x03/7" 标记的项
- * @param page 页面指针
- * @param indx 条目索引
- * @return 占用的宽度（像素，取第 0 帧宽）；非 GIF 条目返回 0
  * @note  行为：
  *        - 选中（page->focus_idx == indx）：把条目 icon 指向的 ESGUI_GIF_T
  *          描述符（帧数组/帧间隔/循环次数）装载到页面播放槽，调用
@@ -1820,16 +1847,17 @@ eui_uint16_t esgui_bmp_menu_defalt_get_special_item_draw_w(ESGUI_MenuPage_T *pag
  *        位置由 page->items[0].x + bmp_item_rel_x() 与 items[indx].y 决定，
  *        与 on_draw 中普通位图的布局公式一致。
  */
-eui_uint16_t esgui_bmp_menu_defalt_special_item_draw(ESGUI_MenuPage_T *page, eui_uint16_t indx)
+eui_uint16_t esgui_bmp_menu_defalt_special_item_draw(ESGUI_MenuPage_T *page, eui_uint16_t indx, bool measure)
 {
-    if (page == ESGUI_NULL || page->draw_data == ESGUI_NULL || page->render_ctx == ESGUI_NULL) return 0;
-    if (indx >= page->item_num) return 0;
+    if (page == ESGUI_NULL || page->draw_data == ESGUI_NULL || indx >= page->item_num) return 0;
     ESGUI_DEFAULT_BMP_MENU_DAT *dat = page->draw_data;
     if (indx >= ESGUI_BMP_MENU_MAX_ITEMS || dat->gif_is[indx] == 0) return 0;
 
     /* 条目 icon → GIF 描述符（帧数组与帧间隔均由描述符记录） */
     const ESGUI_GIF_T *desc = (const ESGUI_GIF_T *)page->items[indx].icon;
     if (desc == ESGUI_NULL || desc->frames == ESGUI_NULL || desc->frame_count == 0) return 0;
+
+    if (measure) return (eui_uint16_t)desc->frames[0].w;    /* 测量模式：仅返回第 0 帧宽，不绘制 */
 
     CanvasStripIter *c_it = page->render_ctx;
     eui_int16_t x = page->items[0].x + bmp_item_rel_x(page, indx);
@@ -1866,10 +1894,8 @@ static const esgui_page_vtable_t esgui_default_bmp_menu_vtable = {
     .on_draw                  = esgui_bmp_menu_defalt_on_draw,
 #if ESGUI_ENABLE_GIF
     .special_item_draw        = esgui_bmp_menu_defalt_special_item_draw,
-    .get_special_item_draw_w  = esgui_bmp_menu_defalt_get_special_item_draw_w,
 #else
     .special_item_draw        = ESGUI_NULL,
-    .get_special_item_draw_w  = ESGUI_NULL,
 #endif
     .on_input                 = esgui_bmp_defalt_on_input,
     .on_focus_change          = esgui_bmp_menu_defalt_on_focus_change,
@@ -2044,6 +2070,7 @@ static void start_three_d_focus_rot_anim(ESGUI_DEFAULT_3D_MENU_DAT *dat)
 static void esgui_3d_menu_recompute_layout(ESGUI_MenuPage_T *page, ESGUI_DEFAULT_3D_MENU_DAT *dat)
 {
     if (page == ESGUI_NULL || dat == ESGUI_NULL) return;
+    if (page->item_num == 0) return;    /* 0 条目：不做任何操作 */
     page->items[0].x = 0;
     for (eui_uint16_t i = 0; i < page->item_num; i++) {
         if (i >= ESGUI_3D_MENU_MAX_ITEMS) break;
@@ -2065,6 +2092,7 @@ static void esgui_3d_menu_recompute_layout(ESGUI_MenuPage_T *page, ESGUI_DEFAULT
 
 void esgui_3d_menu_defalt_on_create(ESGUI_MenuPage_T *page) {
     if (page == ESGUI_NULL || page->render_ctx == ESGUI_NULL) return;
+    if (page->item_num == 0) return;    /* 0 条目：不做任何操作 */
     ESGUI_DEFAULT_3D_MENU_DAT *dat = three_d_page_data_alloc();
     if (dat == ESGUI_NULL) return;
     page->draw_data = dat;
@@ -2111,7 +2139,7 @@ void esgui_3d_menu_defalt_on_destroy(ESGUI_MenuPage_T *page) {
     if (page == ESGUI_NULL) return;
     ESGUI_DEFAULT_3D_MENU_DAT *dat = page->draw_data;
     if (dat != ESGUI_NULL) {
-        anim_stop_all(&page->items[0].x);
+        if (page->items != ESGUI_NULL) anim_stop_all(&page->items[0].x);
         anim_stop_all(&dat->progress_bar_per);
         anim_stop_all(&dat->line_len);
         anim_stop_all(&dat->label_anim_y);
@@ -2129,6 +2157,10 @@ void esgui_3d_menu_defalt_on_destroy(ESGUI_MenuPage_T *page) {
 ESGUI_MenuAction_T esgui_3d_menu_defalt_on_input(ESGUI_MenuPage_T *page, ESGUI_EventCode_t e)
 {
     if (page == ESGUI_NULL) return (ESGUI_MenuAction_T){ACT_NONE, ESGUI_NULL};
+    if (page->item_num == 0) {
+        if (e == EVT_KEY_BACK) return (ESGUI_MenuAction_T){ACT_POP_PAGE, ESGUI_NULL};  /* 0 条目：仅允许返回退出 */
+        return (ESGUI_MenuAction_T){ACT_NONE, ESGUI_NULL};                              /* 其余按键不做任何操作 */
+    }
     ESGUI_DEFAULT_3D_MENU_DAT *dat = page->draw_data;
     if (dat && dat->trans_active) return (ESGUI_MenuAction_T){ACT_NONE, ESGUI_NULL};
 
@@ -2172,6 +2204,7 @@ ESGUI_MenuAction_T esgui_3d_menu_defalt_on_input(ESGUI_MenuPage_T *page, ESGUI_E
 static void esgui_3d_menu_recenter(ESGUI_MenuPage_T *page)
 {
     if (page == ESGUI_NULL || page->draw_data == ESGUI_NULL || page->render_ctx == ESGUI_NULL) return;
+    if (page->item_num == 0) return;    /* 0 条目：不做任何操作 */
     ESGUI_DEFAULT_3D_MENU_DAT *dat = page->draw_data;
     CanvasStripIter *c_it = page->render_ctx;
     eui_uint16_t canvas_w = canvas_get_width(c_it);
@@ -2235,6 +2268,7 @@ void esgui_3d_menu_defalt_on_focus_change(ESGUI_MenuPage_T *page, eui_uint16_t o
     (void)old_idx;
     (void)new_idx;
     if (page == ESGUI_NULL || page->draw_data == ESGUI_NULL || page->render_ctx == ESGUI_NULL) return;
+    if (page->item_num == 0) return;    /* 0 条目：不做任何操作 */
     esgui_3d_menu_recenter(page);
 
     if (old_idx == new_idx) {
@@ -2257,6 +2291,7 @@ static void esgui_3d_menu_relayout(ESGUI_MenuPage_T *page, eui_uint16_t old_focu
     (void)old_focus;
     (void)new_focus;
     if (page == ESGUI_NULL || page->draw_data == ESGUI_NULL) return;
+    if (page->item_num == 0) return;    /* 0 条目：不做任何操作 */
     ESGUI_DEFAULT_3D_MENU_DAT *dat = page->draw_data;
     anim_stop_all(&page->items[0].x);
     esgui_3d_menu_recompute_layout(page, dat);
@@ -2266,6 +2301,7 @@ static void esgui_3d_menu_relayout(ESGUI_MenuPage_T *page, eui_uint16_t old_focu
 
 void esgui_3d_menu_default_on_page_change(ESGUI_MenuPage_T *page, ESGUI_MenuAction_T *action) {
     if (page == ESGUI_NULL || action == ESGUI_NULL || page->draw_data == ESGUI_NULL || page->render_ctx == ESGUI_NULL) return;
+    if (page->item_num == 0) return;    /* 0 条目：不做任何操作 */
     ESGUI_DEFAULT_3D_MENU_DAT *dat = page->draw_data;
     CanvasStripIter *c_it = page->render_ctx;
     eui_uint16_t canvas_w = canvas_get_width(c_it);
@@ -2342,6 +2378,7 @@ void esgui_3d_menu_default_on_page_change(ESGUI_MenuPage_T *page, ESGUI_MenuActi
 
 void esgui_3d_menu_defalt_on_draw(ESGUI_MenuPage_T *page) {
     if (page == ESGUI_NULL || page->draw_data == ESGUI_NULL || page->render_ctx == ESGUI_NULL) return;
+    if (page->item_num == 0) return;    /* 0 条目：不做任何操作 */
     CanvasStripIter *c_it = page->render_ctx;
     ESGUI_DEFAULT_3D_MENU_DAT *dat = page->draw_data;
     eui_uint16_t canvas_w = canvas_get_width(c_it);
@@ -2437,7 +2474,6 @@ static const esgui_page_vtable_t esgui_default_3d_menu_vtable = {
     .on_destroy               = esgui_3d_menu_defalt_on_destroy,
     .on_draw                  = esgui_3d_menu_defalt_on_draw,
     .special_item_draw        = ESGUI_NULL,
-    .get_special_item_draw_w  = ESGUI_NULL,
     .on_input                 = esgui_3d_menu_defalt_on_input,
     .on_focus_change          = esgui_3d_menu_defalt_on_focus_change,
     .on_page_chenge           = esgui_3d_menu_default_on_page_change,
@@ -2531,7 +2567,7 @@ void esgui_default_message_popwindow_on_destroy(ESGUI_MenuPage_T *page) {
     if (page == ESGUI_NULL) return;
     ESGUI_PopWindow_T *window = (ESGUI_PopWindow_T*)page;
     if (window->draw_data != ESGUI_NULL){
-        popup_data_free();
+        popup_data_free(page->draw_data);
         window->draw_data = ESGUI_NULL;
     }
     window->render_ctx = ESGUI_NULL;
@@ -2612,7 +2648,6 @@ static const esgui_page_vtable_t message_popwindow_vtable = {
     .on_destroy = esgui_default_message_popwindow_on_destroy,
     .on_draw = esgui_default_message_popwindow_on_draw,
     .special_item_draw = ESGUI_NULL,
-    .get_special_item_draw_w = ESGUI_NULL,
     .on_input = esgui_default_message_popwindow_on_input,
     .on_focus_change = ESGUI_NULL,
     .on_page_chenge = esgui_default_message_popwindow_on_page_change,
@@ -2786,7 +2821,7 @@ void esgui_default_message_scroll_title_popwindow_on_destroy(ESGUI_MenuPage_T *p
     if (window->draw_data != ESGUI_NULL) {
         ESGUI_DEFAULT_MESSAGE_WINDOW_DAT *dat = window->draw_data;
         anim_stop_all(&dat->title_scroll_x);
-        popup_data_free();
+        popup_data_free(page->draw_data);
         window->draw_data = ESGUI_NULL;
     }
     window->render_ctx = ESGUI_NULL;
@@ -2797,7 +2832,6 @@ static const esgui_page_vtable_t message_scroll_title_popwindow_vtable = {
     .on_destroy = esgui_default_message_scroll_title_popwindow_on_destroy,
     .on_draw = esgui_default_message_scroll_title_popwindow_on_draw,
     .special_item_draw = ESGUI_NULL,
-    .get_special_item_draw_w = ESGUI_NULL,
     .on_input = esgui_default_message_popwindow_on_input,
     .on_focus_change = ESGUI_NULL,
     .on_page_chenge = esgui_default_message_popwindow_on_page_change,
@@ -2832,7 +2866,10 @@ void ESGUI_DefaultMessageScrollTitlePopWindowCreate(ESGUI_PopWindow_T *window, c
  * @brief 布尔弹窗私有数据
  */
 typedef struct esgui_default_bool_wondow_dat {
-    bool *val;              /**< 绑定的布尔变量指针 */
+    bool *val;                  /**< 绑定的布尔变量指针 */
+    const char *true_text;      /**< 真值按钮文本 */
+    const char *false_text;     /**< 假值按钮文本 */
+
     eui_uint16_t text1_len;     /**< OK 文本宽度 */
     eui_uint16_t text2_len;     /**< Cancel 文本宽度 */
     eui_uint16_t font_height;   /**< 字体高度 */
@@ -2885,7 +2922,7 @@ static ESGUI_MenuAction_T esgui_default_bool_popwindow_on_enter(ESGUI_MenuPage_T
     if (data && data->val) {
         *data->val = (window->focus_idx == 0) ? 1 : 0;
     }
-    return (ESGUI_MenuAction_T){ACT_NONE, ESGUI_NULL};
+    return (ESGUI_MenuAction_T){ACT_CLOSE_POPUP, ESGUI_NULL};
 }
 
 /**
@@ -2928,7 +2965,7 @@ void esgui_default_bool_popwindow_on_destroy(ESGUI_MenuPage_T *page) {
         ESGUI_DEFAULT_BOOL_WONDOW_DAT *dat = window->draw_data;
         anim_stop_all(&dat->focus_w);
         anim_stop_all(&dat->focus_x);
-        popup_data_free();
+        popup_data_free(page->draw_data);
         window->draw_data = ESGUI_NULL;
     }
     window->render_ctx = ESGUI_NULL;
@@ -2939,7 +2976,8 @@ void esgui_default_bool_popwindow_on_destroy(ESGUI_MenuPage_T *page) {
  * @param page 页面指针
  * @param e    事件码
  * @return 动作指令
- * @note  左右切换焦点，OK 触发 on_enter 后关闭弹窗，BACK 直接关闭。
+ * @note  左右切换焦点，OK 触发 on_enter 并返回其结果（无 on_enter 时关闭弹窗），
+ *        BACK 直接关闭。
  */
 ESGUI_MenuAction_T esgui_default_bool_popwindow_on_input(ESGUI_MenuPage_T *page,ESGUI_EventCode_t e) {
     if (page == ESGUI_NULL) return (ESGUI_MenuAction_T){ACT_NONE, ESGUI_NULL};
@@ -2957,7 +2995,7 @@ ESGUI_MenuAction_T esgui_default_bool_popwindow_on_input(ESGUI_MenuPage_T *page,
         case EVT_KEY_OK:
         case EVT_CLICKED:
             if (page->items[page->focus_idx].on_enter) {
-                page->items[page->focus_idx].on_enter(page, page->items[page->focus_idx].arg);
+                return page->items[page->focus_idx].on_enter(page, page->items[page->focus_idx].arg);
             }
             return (ESGUI_MenuAction_T){ACT_CLOSE_POPUP, ESGUI_NULL};
         case EVT_KEY_BACK:
@@ -3047,7 +3085,6 @@ static const esgui_page_vtable_t boo_popwindow_vtable = {
     .on_destroy = esgui_default_bool_popwindow_on_destroy,
     .on_draw = esgui_default_bool_popwindow_on_draw,
     .special_item_draw = ESGUI_NULL,
-    .get_special_item_draw_w = ESGUI_NULL,
     .on_input = esgui_default_bool_popwindow_on_input,
     .on_focus_change = esgui_default_bool_popwindow_on_focus_change,
     .on_page_chenge = esgui_default_bool_popwindow_on_page_change,
@@ -3057,11 +3094,16 @@ static const esgui_page_vtable_t boo_popwindow_vtable = {
  * @brief 创建布尔弹窗
  * @param window    弹窗结构体指针
  * @param message   消息文本（标题）
+ * @param true_text 真值按钮文本
+ * @param false_text 假值按钮文本
  * @param window_w  弹窗宽度
  * @param window_h  弹窗高度
  * @param boo_val   绑定的布尔变量指针（结果写入此处）
  */
-void ESGUI_DefaultBoolPopWindowCreate(ESGUI_PopWindow_T *window,const char* message,eui_uint16_t window_w,eui_uint16_t window_h,bool *boo_val) {
+void ESGUI_DefaultBoolPopWindowCreate(ESGUI_PopWindow_T *window,
+                                        const char* message,const char* true_text,const char* false_text,
+                                        eui_uint16_t window_w,eui_uint16_t window_h,
+                                        bool *boo_val) {
     if (window == ESGUI_NULL) return;
     memset(window, 0, sizeof(ESGUI_PopWindow_T));
     window->vtbl = &boo_popwindow_vtable;
@@ -3074,6 +3116,21 @@ void ESGUI_DefaultBoolPopWindowCreate(ESGUI_PopWindow_T *window,const char* mess
     if (dat != ESGUI_NULL) {
         dat->val = boo_val;
     }
+
+    if (true_text != ESGUI_NULL) {
+        bool_popwindow_items[0].label = true_text;
+    }
+    else {
+        bool_popwindow_items[0].label = "OK";
+    }
+
+    if (false_text != ESGUI_NULL) {
+        bool_popwindow_items[1].label = false_text;
+    }
+    else {
+        bool_popwindow_items[1].label = "Cancel";
+    }
+
     window->draw_data = dat;
 }
 
@@ -3132,7 +3189,7 @@ void esgui_default_bool_scroll_title_popwindow_on_destroy(ESGUI_MenuPage_T *page
         anim_stop_all(&dat->title_scroll_x);
         anim_stop_all(&dat->focus_w);
         anim_stop_all(&dat->focus_x);
-        popup_data_free();
+        popup_data_free(page->draw_data);
         window->draw_data = ESGUI_NULL;
     }
     window->render_ctx = ESGUI_NULL;
@@ -3143,7 +3200,6 @@ static const esgui_page_vtable_t bool_scroll_title_popwindow_vtable = {
     .on_destroy = esgui_default_bool_scroll_title_popwindow_on_destroy,
     .on_draw = esgui_default_bool_scroll_title_popwindow_on_draw,
     .special_item_draw = ESGUI_NULL,
-    .get_special_item_draw_w = ESGUI_NULL,
     .on_input = esgui_default_bool_popwindow_on_input,
     .on_focus_change = esgui_default_bool_popwindow_on_focus_change,
     .on_page_chenge = esgui_default_bool_popwindow_on_page_change,
@@ -3152,8 +3208,9 @@ static const esgui_page_vtable_t bool_scroll_title_popwindow_vtable = {
 /**
  * @brief 创建布尔弹窗滚动标题版本
  */
-void ESGUI_DefaultBoolScrollTitlePopWindowCreate(ESGUI_PopWindow_T *window, const char* message,
-    eui_uint16_t window_w, eui_uint16_t window_h, bool *boo_val) {
+void ESGUI_DefaultBoolScrollTitlePopWindowCreate(ESGUI_PopWindow_T *window,
+                                                    const char* message,const char* true_text,const char* false_text,
+                                                    eui_uint16_t window_w, eui_uint16_t window_h, bool *boo_val) {
     if (window == ESGUI_NULL) return;
     memset(window, 0, sizeof(ESGUI_PopWindow_T));
     window->vtbl = &bool_scroll_title_popwindow_vtable;
@@ -3166,6 +3223,21 @@ void ESGUI_DefaultBoolScrollTitlePopWindowCreate(ESGUI_PopWindow_T *window, cons
     if (dat != ESGUI_NULL) {
         dat->val = boo_val;
     }
+
+    if (true_text != ESGUI_NULL) {
+        bool_popwindow_items[0].label = true_text;
+    }
+    else {
+        bool_popwindow_items[0].label = "OK";
+    }
+
+    if (false_text != ESGUI_NULL) {
+        bool_popwindow_items[1].label = false_text;
+    }
+    else {
+        bool_popwindow_items[1].label = "Cancel";
+    }
+
     window->draw_data = dat;
 }
 
@@ -3180,7 +3252,7 @@ void ESGUI_DefaultBoolScrollTitlePopWindowCreate(ESGUI_PopWindow_T *window, cons
  * @brief 值弹窗私有数据
  */
 typedef struct {
-    ESGUI_ValueDesc_T *value_desc;  /**< 值描述符指针（包含 get_permille / to_string / step） */
+    const ESGUI_ValueDesc_T *value_desc;  /**< 值描述符指针（包含 get_permille / to_string / step） */
     int text_x;                     /**< 值文本当前 X 坐标（居中） */
     eui_uint16_t font_height;           /**< 字体高度 */
     eui_uint16_t text_len;              /**< 值文本宽度 */
@@ -3248,7 +3320,7 @@ void esgui_default_value_popwindow_on_destroy(ESGUI_MenuPage_T *page) {
     if (page->draw_data != ESGUI_NULL) {
         ESGUI_DEFAULT_VALUE_WINDOW_DAT *dat = page->draw_data;
         anim_stop_all(&dat->bar_per);
-        popup_data_free();
+        popup_data_free(page->draw_data);
         page->draw_data = ESGUI_NULL;
     }
     page->render_ctx = ESGUI_NULL;
@@ -3381,7 +3453,6 @@ static const esgui_page_vtable_t value_popwindow_vtable = {
     .on_destroy = esgui_default_value_popwindow_on_destroy,
     .on_draw = esgui_default_value_popwindow_on_draw,
     .special_item_draw = ESGUI_NULL,
-    .get_special_item_draw_w = ESGUI_NULL,
     .on_input = esgui_default_value_popwindow_on_input,
     .on_focus_change = esgui_default_value_popwindow_on_focus_change,
     .on_page_chenge = esgui_default_value_popwindow_on_page_change,
@@ -3395,7 +3466,7 @@ static const esgui_page_vtable_t value_popwindow_vtable = {
  * @param window_h   弹窗高度
  * @param value_desc 值描述符指针（包含数值操作回调）
  */
-void ESGUI_DefaultValuePopWindowCreate(ESGUI_PopWindow_T *window,const char* message,eui_uint16_t window_w,eui_uint16_t window_h,ESGUI_ValueDesc_T *value_desc) {
+void ESGUI_DefaultValuePopWindowCreate(ESGUI_PopWindow_T *window,const char* message,eui_uint16_t window_w,eui_uint16_t window_h,const ESGUI_ValueDesc_T *value_desc) {
     if (window == ESGUI_NULL) return;
     memset(window, 0, sizeof(ESGUI_PopWindow_T));
     window->vtbl = &value_popwindow_vtable;
@@ -3466,7 +3537,7 @@ void esgui_default_value_scroll_title_popwindow_on_destroy(ESGUI_MenuPage_T *pag
         ESGUI_DEFAULT_VALUE_WINDOW_DAT *dat = page->draw_data;
         anim_stop_all(&dat->title_scroll_x);
         anim_stop_all(&dat->bar_per);
-        popup_data_free();
+        popup_data_free(page->draw_data);
         page->draw_data = ESGUI_NULL;
     }
     page->render_ctx = ESGUI_NULL;
@@ -3477,7 +3548,6 @@ static const esgui_page_vtable_t value_scroll_title_popwindow_vtable = {
     .on_destroy = esgui_default_value_scroll_title_popwindow_on_destroy,
     .on_draw = esgui_default_value_scroll_title_popwindow_on_draw,
     .special_item_draw = ESGUI_NULL,
-    .get_special_item_draw_w = ESGUI_NULL,
     .on_input = esgui_default_value_popwindow_on_input,
     .on_focus_change = esgui_default_value_popwindow_on_focus_change,
     .on_page_chenge = esgui_default_value_popwindow_on_page_change,
@@ -3487,7 +3557,7 @@ static const esgui_page_vtable_t value_scroll_title_popwindow_vtable = {
  * @brief 创建值弹窗滚动标题版本
  */
 void ESGUI_DefaultValueScrollTitlePopWindowCreate(ESGUI_PopWindow_T *window, const char* message,
-    eui_uint16_t window_w, eui_uint16_t window_h, ESGUI_ValueDesc_T *value_desc) {
+    eui_uint16_t window_w, eui_uint16_t window_h, const ESGUI_ValueDesc_T *value_desc) {
     if (window == ESGUI_NULL) return;
     memset(window, 0, sizeof(ESGUI_PopWindow_T));
     window->vtbl = &value_scroll_title_popwindow_vtable;
@@ -3604,6 +3674,7 @@ static void start_textlist_long_text_anim(ESGUI_PopWindow_T *window)
 void esgui_default_text_list_popwindow_on_create(ESGUI_MenuPage_T *page)
 {
     if (page == ESGUI_NULL) return;
+    if (page->item_num == 0) return;    /* 0 条目：不做任何操作 */
     ESGUI_PopWindow_T *window = (ESGUI_PopWindow_T *)page;
     ESGUI_DEFAULT_TEXT_LIST_WINDOW_DAT *data = page->draw_data;
     if (data == ESGUI_NULL) return;
@@ -3625,6 +3696,12 @@ void esgui_default_text_list_popwindow_on_create(ESGUI_MenuPage_T *page)
     data->focus_box_w = focus_w;
     data->focus_box_y = 0;
     data->long_text_x = ESGUI_TEXT_MARGIN_X;
+
+    /* 支持手动指定 focus_idx：越界保护并按焦点初始化布局（焦点框/列表滚动/长文本标志） */
+    if (page->focus_idx >= page->item_num) {
+        page->focus_idx = (eui_uint16_t)(page->item_num - 1);
+    }
+    esgui_default_text_list_popwindow_on_focus_change(page, page->focus_idx, page->focus_idx);
 }
 
 /**
@@ -3638,7 +3715,7 @@ void esgui_default_text_list_popwindow_on_destroy(ESGUI_MenuPage_T *page) {
         anim_stop_all(&dat->long_text_x);
         anim_stop_all(&dat->focus_box_w);
         anim_stop_all(&dat->focus_box_y);
-        popup_data_free();
+        popup_data_free(page->draw_data);
         page->draw_data = ESGUI_NULL;
     }
     page->render_ctx = ESGUI_NULL;
@@ -3653,6 +3730,10 @@ void esgui_default_text_list_popwindow_on_destroy(ESGUI_MenuPage_T *page) {
 ESGUI_MenuAction_T esgui_default_text_list_popwindow_on_input(ESGUI_MenuPage_T *page, ESGUI_EventCode_t e)
 {
     if (page == ESGUI_NULL) return (ESGUI_MenuAction_T){ACT_NONE, ESGUI_NULL};
+    if (page->item_num == 0) {
+        if (e == EVT_KEY_BACK) return (ESGUI_MenuAction_T){ACT_CLOSE_POPUP, ESGUI_NULL};  /* 0 条目：仅允许返回退出 */
+        return (ESGUI_MenuAction_T){ACT_NONE, ESGUI_NULL};                                /* 其余按键不做任何操作 */
+    }
     eui_uint16_t old_focus_idx = page->focus_idx;
     switch (e) {
         case EVT_KEY_UP:
@@ -3695,6 +3776,7 @@ void esgui_default_text_list_popwindow_on_focus_change(ESGUI_MenuPage_T *page, e
     (void)old_idx;
     (void)new_idx;
     if (page == ESGUI_NULL || page->draw_data == ESGUI_NULL) return;
+    if (page->item_num == 0) return;    /* 0 条目：不做任何操作 */
     ESGUI_PopWindow_T *window = (ESGUI_PopWindow_T *)page;
     ESGUI_DEFAULT_TEXT_LIST_WINDOW_DAT *data = page->draw_data;
     eui_uint16_t focus_idx = page->focus_idx;
@@ -3783,6 +3865,7 @@ void esgui_text_list_popwindow_default_on_page_change(ESGUI_MenuPage_T *page, ES
 void esgui_default_text_list_popwindow_on_draw(ESGUI_MenuPage_T *page)
 {
     if (page == ESGUI_NULL || page->draw_data == ESGUI_NULL) return;
+    if (page->item_num == 0) return;    /* 0 条目：不做任何操作 */
     CanvasStripIter *c_it = (CanvasStripIter *)page->render_ctx;
     ESGUI_PopWindow_T *window = (ESGUI_PopWindow_T*)page;
     ESGUI_DEFAULT_TEXT_LIST_WINDOW_DAT *data = (ESGUI_DEFAULT_TEXT_LIST_WINDOW_DAT *)page->draw_data;
@@ -3858,7 +3941,6 @@ static const esgui_page_vtable_t text_list_popwindow_vtable = {
     .on_destroy = esgui_default_text_list_popwindow_on_destroy,
     .on_draw = esgui_default_text_list_popwindow_on_draw,
     .special_item_draw = ESGUI_NULL,
-    .get_special_item_draw_w = ESGUI_NULL,
     .on_input = esgui_default_text_list_popwindow_on_input,
     .on_focus_change = esgui_default_text_list_popwindow_on_focus_change,
     .on_page_chenge = esgui_text_list_popwindow_default_on_page_change,
@@ -3902,6 +3984,7 @@ void ESGUI_DefaultTextListPopWindowCreate(ESGUI_PopWindow_T *window, eui_uint16_
 void esgui_default_text_list_scroll_title_popwindow_on_create(ESGUI_MenuPage_T *page)
 {
     if (page == ESGUI_NULL) return;
+    if (page->item_num == 0) return;    /* 0 条目：不做任何操作 */
     ESGUI_PopWindow_T *window = (ESGUI_PopWindow_T *)page;
     ESGUI_DEFAULT_TEXT_LIST_WINDOW_DAT *data = page->draw_data;
     if (data == ESGUI_NULL) return;
@@ -3932,6 +4015,12 @@ void esgui_default_text_list_scroll_title_popwindow_on_create(ESGUI_MenuPage_T *
     data->focus_box_w = focus_w;
     data->focus_box_y = 0;
     data->long_text_x = ESGUI_TEXT_MARGIN_X;
+
+    /* 支持手动指定 focus_idx：越界保护并按焦点初始化布局（焦点框/列表滚动/长文本标志） */
+    if (page->focus_idx >= page->item_num) {
+        page->focus_idx = (eui_uint16_t)(page->item_num - 1);
+    }
+    esgui_default_text_list_popwindow_on_focus_change(page, page->focus_idx, page->focus_idx);
 }
 
 /**
@@ -3945,7 +4034,7 @@ void esgui_default_text_list_scroll_title_popwindow_on_destroy(ESGUI_MenuPage_T 
         anim_stop_all(&dat->long_text_x);
         anim_stop_all(&dat->focus_box_w);
         anim_stop_all(&dat->focus_box_y);
-        popup_data_free();
+        popup_data_free(page->draw_data);
         page->draw_data = ESGUI_NULL;
     }
     page->render_ctx = ESGUI_NULL;
@@ -3958,6 +4047,7 @@ void esgui_default_text_list_scroll_title_popwindow_on_destroy(ESGUI_MenuPage_T 
 void esgui_default_text_list_scroll_title_popwindow_on_draw(ESGUI_MenuPage_T *page)
 {
     if (page == ESGUI_NULL || page->draw_data == ESGUI_NULL) return;
+    if (page->item_num == 0) return;    /* 0 条目：不做任何操作 */
     CanvasStripIter *c_it = (CanvasStripIter *)page->render_ctx;
     ESGUI_PopWindow_T *window = (ESGUI_PopWindow_T*)page;
     ESGUI_DEFAULT_TEXT_LIST_WINDOW_DAT *data = (ESGUI_DEFAULT_TEXT_LIST_WINDOW_DAT *)page->draw_data;
@@ -4036,7 +4126,6 @@ static const esgui_page_vtable_t text_list_scroll_title_popwindow_vtable = {
     .on_destroy = esgui_default_text_list_scroll_title_popwindow_on_destroy,
     .on_draw = esgui_default_text_list_scroll_title_popwindow_on_draw,
     .special_item_draw = ESGUI_NULL,
-    .get_special_item_draw_w = ESGUI_NULL,
     .on_input = esgui_default_text_list_popwindow_on_input,
     .on_focus_change = esgui_default_text_list_popwindow_on_focus_change,
     .on_page_chenge = esgui_text_list_popwindow_default_on_page_change,
@@ -4095,7 +4184,7 @@ typedef struct {
 
 #if ESGUI_ENABLE_GIF
 /* 前向声明：on_draw 中绘制 GIF 条目时调用（定义在本节末尾 vtable 之前） */
-static eui_uint16_t esgui_bmp_list_popwindow_special_item_draw(ESGUI_MenuPage_T *page, eui_uint16_t indx);
+static eui_uint16_t esgui_bmp_list_popwindow_special_item_draw(ESGUI_MenuPage_T *page, eui_uint16_t indx, bool measure);
 #endif
 
 /**
@@ -4135,6 +4224,7 @@ static const Bitmap *bmp_list_item_bitmap(ESGUI_MenuPage_T *page, eui_uint16_t i
 static void esgui_bmp_list_popwindow_recompute_layout(ESGUI_MenuPage_T *page, ESGUI_DEFAULT_BMP_LIST_WINDOW_DAT *dat)
 {
     if (page == ESGUI_NULL || dat == ESGUI_NULL) return;
+    if (page->item_num == 0) return;    /* 0 条目：不做任何操作 */
     ESGUI_PopWindow_T *window = (ESGUI_PopWindow_T*)page;
 #if ESGUI_ENABLE_GIF
     /* 先扫描 GIF 条目（名称末尾带 "\x03/7" 标记，类型字符 '7'）：
@@ -4189,6 +4279,7 @@ static void esgui_bmp_list_popwindow_recompute_layout(ESGUI_MenuPage_T *page, ES
  */
 void esgui_default_bmp_list_popwindow_on_create(ESGUI_MenuPage_T *page) {
     if (page == ESGUI_NULL) return;
+    if (page->item_num == 0) return;    /* 0 条目：不做任何操作 */
     ESGUI_PopWindow_T *window = (ESGUI_PopWindow_T*)page;
     CanvasStripIter *c_it = page->render_ctx;
     ESGUI_DEFAULT_BMP_LIST_WINDOW_DAT *dat = page->draw_data;
@@ -4213,13 +4304,13 @@ void esgui_default_bmp_list_popwindow_on_destroy(ESGUI_MenuPage_T *page) {
     if (page == ESGUI_NULL) return;
     ESGUI_DEFAULT_BMP_LIST_WINDOW_DAT *dat = page->draw_data;
     if (dat != ESGUI_NULL) {
-        anim_stop_all(&page->items[0].x);
+        if (page->items != ESGUI_NULL) anim_stop_all(&page->items[0].x);
         anim_stop_all(&dat->box_permille);
         anim_stop_all(&dat->label_anim_y);
 #if ESGUI_ENABLE_GIF
         anim_stop_all(&dat->gif_pulse);   /* 停止 GIF 播放保持刷新的脉冲动画 */
 #endif
-        popup_data_free();
+        popup_data_free(page->draw_data);
         page->draw_data = ESGUI_NULL;
     }
     page->render_ctx = ESGUI_NULL;
@@ -4233,6 +4324,10 @@ void esgui_default_bmp_list_popwindow_on_destroy(ESGUI_MenuPage_T *page) {
  */
 ESGUI_MenuAction_T esgui_default_bmp_list_popwindow_on_input(ESGUI_MenuPage_T *page, ESGUI_EventCode_t e) {
     if (page == ESGUI_NULL) return (ESGUI_MenuAction_T){ACT_NONE, ESGUI_NULL};
+    if (page->item_num == 0) {
+        if (e == EVT_KEY_BACK) return (ESGUI_MenuAction_T){ACT_CLOSE_POPUP, ESGUI_NULL};  /* 0 条目：仅允许返回退出 */
+        return (ESGUI_MenuAction_T){ACT_NONE, ESGUI_NULL};                                /* 其余按键不做任何操作 */
+    }
     eui_uint16_t old_focus_idx = page->focus_idx;
     switch (e) {
         case EVT_KEY_UP:
@@ -4280,6 +4375,7 @@ ESGUI_MenuAction_T esgui_default_bmp_list_popwindow_on_input(ESGUI_MenuPage_T *p
 static void esgui_bmp_list_popwindow_recenter(ESGUI_MenuPage_T *page)
 {
     if (page == ESGUI_NULL || page->draw_data == ESGUI_NULL || page->render_ctx == ESGUI_NULL) return;
+    if (page->item_num == 0) return;    /* 0 条目：不做任何操作 */
     ESGUI_PopWindow_T *window = (ESGUI_PopWindow_T*)page;
     ESGUI_DEFAULT_BMP_LIST_WINDOW_DAT *dat = page->draw_data;
     eui_uint16_t focus_idx = page->focus_idx;
@@ -4338,6 +4434,7 @@ static void esgui_bmp_list_popwindow_recenter(ESGUI_MenuPage_T *page)
 void esgui_default_bmp_list_popwindow_on_focus_change(ESGUI_MenuPage_T *page, eui_uint16_t old_idx, eui_uint16_t new_idx) {
     (void)old_idx; (void)new_idx;
     if (page == ESGUI_NULL || page->draw_data == ESGUI_NULL || page->render_ctx == ESGUI_NULL) return;
+    if (page->item_num == 0) return;    /* 0 条目：不做任何操作 */
     esgui_bmp_list_popwindow_recenter(page);
 }
 
@@ -4356,6 +4453,7 @@ static void esgui_bmp_list_popwindow_relayout(ESGUI_MenuPage_T *page, eui_uint16
     (void)old_focus;
     (void)new_focus;
     if (page == ESGUI_NULL || page->draw_data == ESGUI_NULL) return;
+    if (page->item_num == 0) return;    /* 0 条目：不做任何操作 */
     ESGUI_DEFAULT_BMP_LIST_WINDOW_DAT *dat = page->draw_data;
     anim_stop_all(&page->items[0].x);
     esgui_bmp_list_popwindow_recompute_layout(page, dat);
@@ -4370,6 +4468,7 @@ static void esgui_bmp_list_popwindow_relayout(ESGUI_MenuPage_T *page, eui_uint16
  */
 void esgui_default_bmp_list_popwindow_on_page_change(ESGUI_MenuPage_T *page, ESGUI_MenuAction_T *action) {
     if (page == ESGUI_NULL || action == ESGUI_NULL || page->draw_data == ESGUI_NULL || page->render_ctx == ESGUI_NULL) return;
+    if (page->item_num == 0) return;    /* 0 条目：不做任何操作 */
     ESGUI_PopWindow_T *window = (ESGUI_PopWindow_T*)page;
     ESGUI_DEFAULT_BMP_LIST_WINDOW_DAT *dat = page->draw_data;
     CanvasStripIter *c_it = page->render_ctx;
@@ -4429,6 +4528,7 @@ void esgui_default_bmp_list_popwindow_on_page_change(ESGUI_MenuPage_T *page, ESG
  */
 void esgui_default_bmp_list_popwindow_on_draw(ESGUI_MenuPage_T *page) {
     if (page == ESGUI_NULL || page->draw_data == ESGUI_NULL || page->render_ctx == ESGUI_NULL) return;
+    if (page->item_num == 0) return;    /* 0 条目：不做任何操作 */
     CanvasStripIter *c_it = page->render_ctx;
     ESGUI_PopWindow_T *window = (ESGUI_PopWindow_T*)page;
     ESGUI_DEFAULT_BMP_LIST_WINDOW_DAT *dat = page->draw_data;
@@ -4497,7 +4597,7 @@ void esgui_default_bmp_list_popwindow_on_draw(ESGUI_MenuPage_T *page) {
         if (i < ESGUI_BMP_MENU_MAX_ITEMS && dat->gif_is[i]) {
             /* GIF 条目：绘制交给 special_item_draw
              *（选中→循环播放，未选中→第 0 帧） */
-            esgui_bmp_list_popwindow_special_item_draw(page, i);
+            esgui_bmp_list_popwindow_special_item_draw(page, i, false);
         } else
 #endif /* ESGUI_ENABLE_GIF */
         {
@@ -4536,25 +4636,11 @@ void esgui_default_bmp_list_popwindow_on_draw(ESGUI_MenuPage_T *page) {
  * 坐标含弹窗偏移（window_x/window_y/content_padding），与 on_draw 布局公式一致。 */
 
 /**
- * @brief 获取 BMP 列表弹窗特殊条目（GIF）所占宽度
- * @param page 页面指针
- * @param indx 条目索引
+ * @brief 特殊条目统一接口：测量 + 绘制（BMP 列表弹窗 GIF 条目）
+ * @param page    页面指针
+ * @param indx    条目索引
+ * @param measure true=仅返回占宽（第 0 帧宽，不绘制）；false=真正绘制并返回占宽
  * @return GIF 条目返回第 0 帧宽度（像素）；非 GIF 条目返回 0
- */
-static eui_uint16_t esgui_bmp_list_popwindow_get_special_item_draw_w(ESGUI_MenuPage_T *page, eui_uint16_t indx)
-{
-    if (page == ESGUI_NULL || page->draw_data == ESGUI_NULL || indx >= page->item_num) return 0;
-    ESGUI_DEFAULT_BMP_LIST_WINDOW_DAT *dat = page->draw_data;
-    if (indx >= ESGUI_BMP_MENU_MAX_ITEMS || dat->gif_is[indx] == 0) return 0;
-    const ESGUI_GIF_T *g = (const ESGUI_GIF_T *)page->items[indx].icon;
-    return (g != ESGUI_NULL && g->frames != ESGUI_NULL) ? (eui_uint16_t)g->frames[0].w : 0;
-}
-
-/**
- * @brief 绘制 BMP 列表弹窗特殊条目（GIF）：名称末尾带 "\x03/7" 标记的项
- * @param page 页面指针
- * @param indx 条目索引
- * @return 占用的宽度（像素，取第 0 帧宽）；非 GIF 条目返回 0
  * @note  行为：
  *        - 选中（page->focus_idx == indx）：把条目 icon 指向的 ESGUI_GIF_T
  *          描述符装载到弹窗播放槽，调用 ESGUI_GIFDraw 循环播放，
@@ -4562,16 +4648,17 @@ static eui_uint16_t esgui_bmp_list_popwindow_get_special_item_draw_w(ESGUI_MenuP
  *        - 未选中：仅绘制第 0 帧（静态图），并重置播放槽，
  *          保证再次选中时从第 0 帧重新开始。
  */
-static eui_uint16_t esgui_bmp_list_popwindow_special_item_draw(ESGUI_MenuPage_T *page, eui_uint16_t indx)
+static eui_uint16_t esgui_bmp_list_popwindow_special_item_draw(ESGUI_MenuPage_T *page, eui_uint16_t indx, bool measure)
 {
-    if (page == ESGUI_NULL || page->draw_data == ESGUI_NULL || page->render_ctx == ESGUI_NULL) return 0;
-    if (indx >= page->item_num) return 0;
+    if (page == ESGUI_NULL || page->draw_data == ESGUI_NULL || indx >= page->item_num) return 0;
     ESGUI_DEFAULT_BMP_LIST_WINDOW_DAT *dat = page->draw_data;
     if (indx >= ESGUI_BMP_MENU_MAX_ITEMS || dat->gif_is[indx] == 0) return 0;
 
     /* 条目 icon → GIF 描述符（帧数组与帧间隔均由描述符记录） */
     const ESGUI_GIF_T *desc = (const ESGUI_GIF_T *)page->items[indx].icon;
     if (desc == ESGUI_NULL || desc->frames == ESGUI_NULL || desc->frame_count == 0) return 0;
+
+    if (measure) return (eui_uint16_t)desc->frames[0].w;    /* 测量模式：仅返回第 0 帧宽，不绘制 */
 
     ESGUI_PopWindow_T *window = (ESGUI_PopWindow_T*)page;
     CanvasStripIter *c_it = page->render_ctx;
@@ -4609,10 +4696,8 @@ static const esgui_page_vtable_t bmp_list_popwindow_vtable = {
     .on_draw                  = esgui_default_bmp_list_popwindow_on_draw,
 #if ESGUI_ENABLE_GIF
     .special_item_draw        = esgui_bmp_list_popwindow_special_item_draw,
-    .get_special_item_draw_w  = esgui_bmp_list_popwindow_get_special_item_draw_w,
 #else
     .special_item_draw        = ESGUI_NULL,
-    .get_special_item_draw_w  = ESGUI_NULL,
 #endif
     .on_input                 = esgui_default_bmp_list_popwindow_on_input,
     .on_focus_change          = esgui_default_bmp_list_popwindow_on_focus_change,
@@ -4657,6 +4742,8 @@ void ESGUI_DefaultBMPListPopWindowCreate(ESGUI_PopWindow_T *window, const char *
  * @brief BMP 列表弹窗滚动标题版本创建回调
  */
 void esgui_default_bmp_list_scroll_title_popwindow_on_create(ESGUI_MenuPage_T *page) {
+    if (page == ESGUI_NULL) return;
+    if (page->item_num == 0) return;    /* 0 条目：不做任何操作 */
     esgui_default_bmp_list_popwindow_on_create(page);
     if (page == ESGUI_NULL) return;
     ESGUI_PopWindow_T *window = (ESGUI_PopWindow_T*)page;
@@ -4672,6 +4759,7 @@ void esgui_default_bmp_list_scroll_title_popwindow_on_create(ESGUI_MenuPage_T *p
  */
 void esgui_default_bmp_list_scroll_title_popwindow_on_draw(ESGUI_MenuPage_T *page) {
     if (page == ESGUI_NULL || page->draw_data == ESGUI_NULL || page->render_ctx == ESGUI_NULL) return;
+    if (page->item_num == 0) return;    /* 0 条目：不做任何操作 */
     CanvasStripIter *c_it = page->render_ctx;
     ESGUI_PopWindow_T *window = (ESGUI_PopWindow_T*)page;
     ESGUI_DEFAULT_BMP_LIST_WINDOW_DAT *dat = page->draw_data;
@@ -4733,7 +4821,7 @@ void esgui_default_bmp_list_scroll_title_popwindow_on_draw(ESGUI_MenuPage_T *pag
         if (i < ESGUI_BMP_MENU_MAX_ITEMS && dat->gif_is[i]) {
             /* GIF 条目：绘制交给 special_item_draw
              *（选中→循环播放，未选中→第 0 帧） */
-            esgui_bmp_list_popwindow_special_item_draw(page, i);
+            esgui_bmp_list_popwindow_special_item_draw(page, i, false);
         } else
 #endif /* ESGUI_ENABLE_GIF */
         {
@@ -4773,13 +4861,13 @@ void esgui_default_bmp_list_scroll_title_popwindow_on_destroy(ESGUI_MenuPage_T *
     ESGUI_DEFAULT_BMP_LIST_WINDOW_DAT *dat = page->draw_data;
     if (dat != ESGUI_NULL) {
         anim_stop_all(&dat->title_scroll_x);
-        anim_stop_all(&page->items[0].x);
+        if (page->items != ESGUI_NULL) anim_stop_all(&page->items[0].x);
         anim_stop_all(&dat->box_permille);
         anim_stop_all(&dat->label_anim_y);
 #if ESGUI_ENABLE_GIF
         anim_stop_all(&dat->gif_pulse);   /* 停止 GIF 播放保持刷新的脉冲动画 */
 #endif
-        popup_data_free();
+        popup_data_free(page->draw_data);
         page->draw_data = ESGUI_NULL;
     }
     page->render_ctx = ESGUI_NULL;
@@ -4791,10 +4879,8 @@ static const esgui_page_vtable_t bmp_list_scroll_title_popwindow_vtable = {
     .on_draw                  = esgui_default_bmp_list_scroll_title_popwindow_on_draw,
 #if ESGUI_ENABLE_GIF
     .special_item_draw        = esgui_bmp_list_popwindow_special_item_draw,
-    .get_special_item_draw_w  = esgui_bmp_list_popwindow_get_special_item_draw_w,
 #else
     .special_item_draw        = ESGUI_NULL,
-    .get_special_item_draw_w  = ESGUI_NULL,
 #endif
     .on_input                 = esgui_default_bmp_list_popwindow_on_input,
     .on_focus_change          = esgui_default_bmp_list_popwindow_on_focus_change,
@@ -4825,6 +4911,804 @@ void ESGUI_DefaultBMPListScrollTitlePopWindowCreate(ESGUI_PopWindow_T *window, c
 #endif /* ESGUI_ENABLE_POPUP_BMPLIST_SCROLL_TITLE */
 
 
+#if ESGUI_ENABLE_KEYBOARD
+
+/* ========== 键盘输入弹窗 ========== */
+
+/**
+ * @brief 键盘输入弹窗私有数据
+ * @note  编辑期间文本写入内部缓冲 edit_buf（不直接动用户缓冲），
+ *        按"确定"时按用户目标缓冲容量截断后写入；按"取消"直接丢弃。
+ */
+typedef struct esgui_default_keyboard_window_dat {
+    ESGUI_KeyBoard_T kb;                        /**< 键盘组件 */
+    ESGUI_EditBox_T  eb;                        /**< 文本框组件 */
+    char  edit_buf[ESGUI_KEYBOARD_EDIT_MAX_LEN];/**< 内部编辑缓冲 */
+    const char *init_text;                      /**< 初始文本指针（on_create 时装入 edit_buf） */
+    char *dst_buf;                              /**< 用户目标缓冲区（确定时写入） */
+    eui_uint16_t dst_size;                      /**< 用户目标缓冲区容量 */
+    eui_uint16_t caret_pulse;                   /**< 光标闪烁脉冲动画变量（保持弹窗持续刷新） */
+    eui_uint16_t edit_h;                        /**< 输入框高度 = 字体行高 + 4 */
+    eui_uint16_t kb_area_h;                     /**< 键盘区域高度 = 弹窗高 - 输入框高 */
+    eui_uint16_t font_height;                   /**< 键盘字体行高 */
+} ESGUI_DEFAULT_KEYBOARD_WINDOW_DAT;
+
+void esgui_default_keyboard_popwindow_on_create(ESGUI_MenuPage_T *page) {
+    if (page == ESGUI_NULL) return;
+    ESGUI_PopWindow_T *window = (ESGUI_PopWindow_T*)page;
+    CanvasStripIter *c_it = page->render_ctx;
+    ESGUI_DEFAULT_KEYBOARD_WINDOW_DAT *data = (ESGUI_DEFAULT_KEYBOARD_WINDOW_DAT*)window->draw_data;
+    if (data == ESGUI_NULL) return;
+
+    data->font_height = (eui_uint16_t)eui_get_text_height(&ESGUI_KEY_BOARD_FONT, "0");
+    data->edit_h = data->font_height + 4;
+
+    /* 定位：水平居中，垂直贴屏幕下半部分 */
+    window->window_x = (canvas_get_width(c_it) - window->window_w) / 2;
+    if (window->window_x < 0) window->window_x = 0;
+    window->window_y = canvas_get_height(c_it) - window->window_h;
+    if (window->window_y < 0) window->window_y = 0;
+    data->kb_area_h = (window->window_h > data->edit_h) ? (eui_uint16_t)(window->window_h - data->edit_h) : 1;
+
+    /* 文本框（绑定内部编辑缓冲） */
+    ESGUI_EditBoxInit(&data->eb, data->edit_buf, sizeof(data->edit_buf));
+    if (data->init_text) {
+        eui_uint16_t n = 0;
+        while (data->init_text[n] != '\0' && n + 1 < sizeof(data->edit_buf)) {
+            data->edit_buf[n] = data->init_text[n];
+            n++;
+        }
+        data->edit_buf[n] = '\0';
+        data->eb.len = n;
+        data->eb.cursor = n;
+    }
+
+    /* 键盘（全宽 + 剩余高度，键高用配置默认值） */
+    ESGUI_KeyBoardInit(&data->kb, &ESGUI_KEY_BOARD_FONT,
+                       window->window_x, window->window_y + data->edit_h,
+                       window->window_w, data->kb_area_h, 0);
+}
+
+void esgui_default_keyboard_popwindow_on_destroy(ESGUI_MenuPage_T *page) {
+    if (page == ESGUI_NULL) return;
+    ESGUI_PopWindow_T *window = (ESGUI_PopWindow_T*)page;
+    if (window->draw_data != ESGUI_NULL) {
+        ESGUI_DEFAULT_KEYBOARD_WINDOW_DAT *dat = (ESGUI_DEFAULT_KEYBOARD_WINDOW_DAT*)window->draw_data;
+        anim_stop_all(&dat->caret_pulse);
+        anim_stop_all(&window->window_y);
+        popup_data_free(page->draw_data);
+        window->draw_data = ESGUI_NULL;
+    }
+    window->render_ctx = ESGUI_NULL;
+}
+
+ESGUI_MenuAction_T esgui_default_keyboard_popwindow_on_input(ESGUI_MenuPage_T *page, ESGUI_EventCode_t e) {
+    if (page == ESGUI_NULL) return (ESGUI_MenuAction_T){ACT_NONE, ESGUI_NULL};
+    ESGUI_PopWindow_T *window = (ESGUI_PopWindow_T*)page;
+    ESGUI_DEFAULT_KEYBOARD_WINDOW_DAT *data = (ESGUI_DEFAULT_KEYBOARD_WINDOW_DAT*)window->draw_data;
+    if (data == ESGUI_NULL) return (ESGUI_MenuAction_T){ACT_NONE, ESGUI_NULL};
+
+    if (e == EVT_KEY_BACK) {
+        return (ESGUI_MenuAction_T){ACT_CLOSE_POPUP, ESGUI_NULL};
+    }
+
+    /* 方向键：仅移动键盘焦点 */
+    if (e == EVT_KEY_UP || e == EVT_KEY_DOWN || e == EVT_KEY_LEFT || e == EVT_KEY_RIGHT) {
+        char ch = 0;
+        ESGUI_KeyAction_T act = ESGUI_KEY_CHAR;
+        bool handled = ESGUI_KeyBoardHandleEvent(&data->kb, e, &ch, &act);
+        return handled ? (ESGUI_MenuAction_T){ACT_REFRESH, ESGUI_NULL}
+                       : (ESGUI_MenuAction_T){ACT_NONE, ESGUI_NULL};
+    }
+
+    /* 确认键：触发当前键动作 */
+    if (e == EVT_KEY_OK || e == EVT_CLICKED) {
+        char ch = 0;
+        ESGUI_KeyAction_T act = ESGUI_KEY_CHAR;
+        ESGUI_KeyBoardHandleEvent(&data->kb, e, &ch, &act);
+        switch (act) {
+            case ESGUI_KEY_CHAR:
+                ESGUI_EditBoxInsert(&data->eb, ch);
+                break;
+            case ESGUI_KEY_SHIFT:
+                data->kb.shift = data->kb.shift ? 0 : 1;
+                break;
+            case ESGUI_KEY_PAGE_ABC:
+                ESGUI_KeyBoardSetPage(&data->kb, 0);
+                break;
+            case ESGUI_KEY_PAGE_NUM:
+                ESGUI_KeyBoardSetPage(&data->kb, 1);
+                break;
+            case ESGUI_KEY_BACKSPACE:
+                ESGUI_EditBoxBackspace(&data->eb);
+                break;
+            case ESGUI_KEY_SPACE:
+                ESGUI_EditBoxInsert(&data->eb, ' ');
+                break;
+            case ESGUI_KEY_CURSOR_LEFT:
+                ESGUI_EditBoxCursorMove(&data->eb, -1);
+                break;
+            case ESGUI_KEY_CURSOR_RIGHT:
+                ESGUI_EditBoxCursorMove(&data->eb, 1);
+                break;
+            case ESGUI_KEY_ENTER:
+                if (data->dst_buf != ESGUI_NULL && data->dst_size > 0) {
+                    eui_uint16_t n = data->eb.len;
+                    if (n >= data->dst_size) n = (eui_uint16_t)(data->dst_size - 1);
+                    memcpy(data->dst_buf, data->eb.buffer, n);
+                    data->dst_buf[n] = '\0';
+                }
+                return (ESGUI_MenuAction_T){ACT_CLOSE_POPUP, ESGUI_NULL};
+            case ESGUI_KEY_CANCEL:
+                return (ESGUI_MenuAction_T){ACT_CLOSE_POPUP, ESGUI_NULL};
+            default:
+                break;
+        }
+        return (ESGUI_MenuAction_T){ACT_REFRESH, ESGUI_NULL};
+    }
+
+    return (ESGUI_MenuAction_T){ACT_NONE, ESGUI_NULL};
+}
+
+void esgui_default_keyboard_popwindow_on_draw(ESGUI_MenuPage_T *page) {
+    if (page == ESGUI_NULL) return;
+    CanvasStripIter *c_it = page->render_ctx;
+    ESGUI_PopWindow_T *window = (ESGUI_PopWindow_T*)page;
+    ESGUI_DEFAULT_KEYBOARD_WINDOW_DAT *data = (ESGUI_DEFAULT_KEYBOARD_WINDOW_DAT*)window->draw_data;
+    if (data == ESGUI_NULL) return;
+
+    /* 光标闪烁脉冲：弹窗激活期间保持持续刷新（与 GIF 播放同机制） */
+    if (!anim_is_running_var(&data->caret_pulse)) {
+        anim_t pulse = {0};
+        pulse.var         = &data->caret_pulse;
+        pulse.exec_cb     = anim_cb_uint16;
+        pulse.start       = 0;
+        pulse.end         = 0;
+        pulse.duration    = 100;
+        pulse.path_type   = ANIM_PATH_LINEAR;
+        pulse.repeat_cnt  = 0xFFFF;   /* 无限循环 */
+        pulse.repeat_total = 0xFFFF;
+        anim_start(&pulse);
+    }
+
+    Area a = {window->window_x, window->window_y,
+              window->window_x + window->window_w, window->window_y + window->window_h};
+    canvas_clip_push(c_it->canvas, &a);
+
+    /* 先填黑底，清空弹窗内部空间（与其它弹窗一致，避免与背景内容叠加） */
+    eui_draw_rect_fill(c_it->canvas, window->window_x, window->window_y,
+                       window->window_x + window->window_w - 1,
+                       window->window_y + window->window_h - 1, EUI_MODE_CLER);
+
+    /* 输入框（顶部） */
+    bool caret_on = ((anim_get_tick() / 500) & 1) ? true : false;
+    ESGUI_EditBoxDraw(c_it->canvas, &data->eb,
+                      window->window_x + 2, window->window_y,
+                      window->window_w - 4, &ESGUI_KEY_BOARD_FONT, caret_on);
+
+    /* 键盘（下半区域，裁剪到键盘区域，滚动行不会画到输入框上）
+     * kb_y 随 window_y 动画实时同步，保证键盘与窗体一起移动 */
+    data->kb.kb_y = window->window_y + data->edit_h;
+    Area kba = {window->window_x, window->window_y + data->edit_h,
+                window->window_x + window->window_w - 1,
+                window->window_y + window->window_h - 1};
+    canvas_clip_push(c_it->canvas, &kba);
+    ESGUI_KeyBoardDraw(c_it->canvas, &data->kb);
+    canvas_clip_pop(c_it->canvas);
+
+    canvas_clip_pop(c_it->canvas);
+}
+
+void esgui_default_keyboard_popwindow_on_page_change(ESGUI_MenuPage_T *page, ESGUI_MenuAction_T *action) {
+    if (page == ESGUI_NULL || action == ESGUI_NULL) return;
+    ESGUI_PopWindow_T *window = (ESGUI_PopWindow_T*)page;
+    switch (action->act) {
+        case ACT_SHOW_POPUP:
+            start_popwindow_window_anim(window, 0 - window->window_h - 10,
+                                        window->window_y, 400, ANIM_PATH_OVERSHOOT);
+            break;
+        case ACT_CLOSE_POPUP:
+            start_popwindow_window_anim(window, window->window_y,
+                                        0 - window->window_h - 10, 400, ANIM_PATH_EASE_IN_OUT);
+            break;
+        default:
+            break;
+    }
+}
+
+/**
+ * @brief 键盘输入弹窗默认虚函数表
+ */
+static const esgui_page_vtable_t keyboard_popwindow_vtable = {
+    .on_create         = esgui_default_keyboard_popwindow_on_create,
+    .on_destroy        = esgui_default_keyboard_popwindow_on_destroy,
+    .on_draw           = esgui_default_keyboard_popwindow_on_draw,
+    .special_item_draw = ESGUI_NULL,
+    .on_input          = esgui_default_keyboard_popwindow_on_input,
+    .on_focus_change   = ESGUI_NULL,
+    .on_page_chenge    = esgui_default_keyboard_popwindow_on_page_change,
+};
+
+void ESGUI_DefaultKeyBoardPopWindowCreate(ESGUI_PopWindow_T *window,
+                                          eui_uint16_t window_w, eui_uint16_t window_h,
+                                          char *dst_buf, eui_uint16_t dst_size,
+                                          const char *init_text) {
+    if (window == ESGUI_NULL) return;
+    memset(window, 0, sizeof(ESGUI_PopWindow_T));
+    window->vtbl     = &keyboard_popwindow_vtable;
+    window->title    = "";
+    window->window_w = window_w;
+    window->window_h = window_h;
+    window->item_num = 0;
+    window->items    = ESGUI_NULL;
+    ESGUI_DEFAULT_KEYBOARD_WINDOW_DAT *dat = (ESGUI_DEFAULT_KEYBOARD_WINDOW_DAT*)popup_data_alloc();
+    if (dat != ESGUI_NULL) {
+        dat->dst_buf   = dst_buf;
+        dat->dst_size  = dst_size;
+        dat->init_text = init_text;
+    }
+    window->draw_data = dat;
+}
+
+#endif /* ESGUI_ENABLE_KEYBOARD */
+
+
+#if ESGUI_ENABLE_POPUP_LONGTEXT
+
+/* ========== 无按钮长文本消息弹窗 ========== */
+
+/**
+ * @brief 长文本弹窗私有数据
+ * @note  行偏移表在 on_create 时按弹窗宽度自动断行构建（支持 UTF-8）；
+ *        UP/DOWN 滚动浏览，右侧纵向进度条显示浏览进度。
+ */
+typedef struct esgui_default_message_longtext_window_dat {
+    const char *msg;                            /**< 消息文本 */
+    eui_uint16_t line_start[ESGUI_LONGTEXT_POPUP_MAX_LINES]; /**< 每行起始偏移 */
+    eui_uint16_t line_num;                      /**< 总行数 */
+    eui_int16_t  view_offset;                   /**< 内容顶部相对显示区顶部的垂直偏移（像素，滚动动画变量） */
+    eui_uint16_t font_height;                   /**< 字体行高 */
+    eui_uint16_t text_w;                        /**< 文本区宽度（弹窗宽 - 进度条 - 边距） */
+    eui_uint16_t inner_h;                       /**< 显示区高度（弹窗高 - 上下边距） */
+    eui_uint16_t total_h;                       /**< 文本内容总高度 = 行数 × 行高 */
+} ESGUI_DEFAULT_MESSAGE_LONGTEXT_WINDOW_DAT;
+
+/** @brief 返回 UTF-8 字符字节数（ASCII 1，中文等 2~4） */
+static eui_uint8_t lt_utf8_char_len(char c)
+{
+    eui_uint8_t c0 = (eui_uint8_t)c;
+    if ((c0 & 0x80) == 0) return 1;
+    if ((c0 & 0xE0) == 0xC0) return 2;
+    if ((c0 & 0xF0) == 0xE0) return 3;
+    if ((c0 & 0xF8) == 0xF0) return 4;
+    return 1;
+}
+
+/**
+ * @brief 按最大宽度自动断行，构建行偏移表
+ * @return 行数（≤ max_lines）
+ */
+static eui_uint16_t lt_build_lines(const char *msg, eui_uint16_t max_w, const Font *font,
+                                   eui_uint16_t *line_start, eui_uint16_t max_lines)
+{
+    eui_uint16_t line = 0;
+    eui_uint16_t pos = 0;
+    eui_uint16_t w = 0;
+    line_start[0] = 0;
+    while (msg[pos] && line + 1 < max_lines) {
+        if (msg[pos] == '\n') {
+            pos++;
+            line++;
+            line_start[line] = pos;
+            w = 0;
+            continue;
+        }
+        eui_uint8_t clen = lt_utf8_char_len(msg[pos]);
+        char tmp[8] = {0};
+        eui_uint8_t k;
+        for (k = 0; k < clen && msg[pos + k]; k++) tmp[k] = msg[pos + k];
+        int cw = eui_get_text_width(font, tmp);
+        if (w + (eui_uint16_t)cw > max_w && w > 0) {
+            line++;
+            line_start[line] = pos;
+            w = 0;
+        }
+        w += (eui_uint16_t)cw;
+        pos += clen;
+    }
+    return (eui_uint16_t)(line + 1);
+}
+
+/** @brief 逐字符绘制一行文本（到 '\n' 或结尾或 max_w，不改源串，支持 UTF-8） */
+static void lt_draw_line(Canvas *c, int x, int y, const Font *font, const char *s, int max_w)
+{
+    int cx = x;
+    while (*s && *s != '\n') {
+        eui_uint8_t clen = lt_utf8_char_len(*s);
+        char tmp[8] = {0};
+        eui_uint8_t k;
+        for (k = 0; k < clen && s[k]; k++) tmp[k] = s[k];
+        int cw = eui_get_text_width(font, tmp);
+        if (cx + cw > x + max_w) break;
+        eui_draw_text(c, cx, y, font, tmp, 1);
+        cx += cw;
+        s += clen;
+    }
+}
+
+/** @brief 启动文本滚动动画（从当前 view_offset 平滑滑到 target）
+ *  @note  依赖 anim_start 的热更新：同变量动画在跑时只更新终点、不重启，
+ *         编码器快速旋转时同一变量始终只有一个动画在跑，不会卡顿。 */
+static void lt_start_scroll_anim(ESGUI_DEFAULT_MESSAGE_LONGTEXT_WINDOW_DAT *data, eui_int16_t target)
+{
+    if (data == ESGUI_NULL) return;
+    anim_t a = {0};
+    a.var       = &data->view_offset;
+    a.start     = data->view_offset;
+    a.end       = target;
+    a.exec_cb   = anim_cb_int16;
+    a.duration  = 100;   /* 短时长，快速旋转更跟手 */
+    a.path_type = ANIM_PATH_EASE_OUT;
+    anim_start(&a);
+}
+
+void esgui_default_message_longtext_popwindow_on_create(ESGUI_MenuPage_T *page) {
+    if (page == ESGUI_NULL) return;
+    ESGUI_PopWindow_T *window = (ESGUI_PopWindow_T*)page;
+    CanvasStripIter *c_it = page->render_ctx;
+    ESGUI_DEFAULT_MESSAGE_LONGTEXT_WINDOW_DAT *data = (ESGUI_DEFAULT_MESSAGE_LONGTEXT_WINDOW_DAT*)window->draw_data;
+    if (data == ESGUI_NULL) return;
+    data->font_height = (eui_uint16_t)eui_get_text_height(&ESGUI_DEFAULT_FONT, "0");
+    data->text_w = (window->window_w > (eui_uint16_t)(ESGUI_PROGRESS_BAR_W + 12))
+                   ? (eui_uint16_t)(window->window_w - ESGUI_PROGRESS_BAR_W - 12) : 10;
+    window->window_x = (canvas_get_width(c_it) - window->window_w) / 2;
+    if (window->window_x < 0) window->window_x = 0;
+    if (data->msg) {
+        data->line_num = lt_build_lines(data->msg, data->text_w, &ESGUI_DEFAULT_FONT,
+                                        data->line_start, ESGUI_LONGTEXT_POPUP_MAX_LINES);
+    } else {
+        data->line_num = 1;
+        data->line_start[0] = 0;
+    }
+    data->inner_h = (window->window_h > 7) ? (eui_uint16_t)(window->window_h - 7) : 1;
+    data->total_h = (eui_uint16_t)(data->line_num * data->font_height);
+    data->view_offset = 0;
+}
+
+void esgui_default_message_longtext_popwindow_on_destroy(ESGUI_MenuPage_T *page) {
+    if (page == ESGUI_NULL) return;
+    ESGUI_PopWindow_T *window = (ESGUI_PopWindow_T*)page;
+    if (window->draw_data != ESGUI_NULL) {
+        anim_stop_all(&window->window_y);
+        anim_stop_all(&((ESGUI_DEFAULT_MESSAGE_LONGTEXT_WINDOW_DAT*)window->draw_data)->view_offset);
+        popup_data_free(page->draw_data);
+        window->draw_data = ESGUI_NULL;
+    }
+    window->render_ctx = ESGUI_NULL;
+}
+
+ESGUI_MenuAction_T esgui_default_message_longtext_popwindow_on_input(ESGUI_MenuPage_T *page, ESGUI_EventCode_t e) {
+    if (page == ESGUI_NULL) return (ESGUI_MenuAction_T){ACT_NONE, ESGUI_NULL};
+    ESGUI_DEFAULT_MESSAGE_LONGTEXT_WINDOW_DAT *data = (ESGUI_DEFAULT_MESSAGE_LONGTEXT_WINDOW_DAT*)page->draw_data;
+    switch (e) {
+        case EVT_KEY_UP: {   /* 与菜单方向一致：向下浏览（动画滑动一行） */
+            if (data == ESGUI_NULL) return (ESGUI_MenuAction_T){ACT_NONE, ESGUI_NULL};
+            eui_int16_t max_off = (eui_int16_t)data->total_h - (eui_int16_t)data->inner_h;
+            if (max_off < 0) max_off = 0;
+            eui_int16_t target = data->view_offset + (eui_int16_t)data->font_height;
+            if (target > max_off) target = max_off;
+            if (target == data->view_offset) return (ESGUI_MenuAction_T){ACT_NONE, ESGUI_NULL};
+            lt_start_scroll_anim(data, target);
+            return (ESGUI_MenuAction_T){ACT_REFRESH, ESGUI_NULL};
+        }
+        case EVT_KEY_DOWN: {
+            if (data == ESGUI_NULL) return (ESGUI_MenuAction_T){ACT_NONE, ESGUI_NULL};
+            eui_int16_t target = data->view_offset - (eui_int16_t)data->font_height;
+            if (target < 0) target = 0;
+            if (target == data->view_offset) return (ESGUI_MenuAction_T){ACT_NONE, ESGUI_NULL};
+            lt_start_scroll_anim(data, target);
+            return (ESGUI_MenuAction_T){ACT_REFRESH, ESGUI_NULL};
+        }
+        case EVT_KEY_OK:
+        case EVT_CLICKED:
+        case EVT_KEY_BACK:   /* 短按/长按均返回，与普通消息弹窗一致 */
+            return (ESGUI_MenuAction_T){ACT_CLOSE_POPUP, ESGUI_NULL};
+        default:
+            return (ESGUI_MenuAction_T){ACT_NONE, ESGUI_NULL};
+    }
+}
+
+void esgui_default_message_longtext_popwindow_on_draw(ESGUI_MenuPage_T *page) {
+    if (page == ESGUI_NULL) return;
+    CanvasStripIter *c_it = page->render_ctx;
+    ESGUI_PopWindow_T *window = (ESGUI_PopWindow_T*)page;
+    ESGUI_DEFAULT_MESSAGE_LONGTEXT_WINDOW_DAT *data = (ESGUI_DEFAULT_MESSAGE_LONGTEXT_WINDOW_DAT*)window->draw_data;
+    if (data == ESGUI_NULL) return;
+
+    Area a = {window->window_x, window->window_y,
+              window->window_x + window->window_w, window->window_y + window->window_h};
+    canvas_clip_push(c_it->canvas, &a);
+    /* 黑底白框（与普通消息弹窗一致） */
+    eui_draw_round_rect_box(c_it->canvas, window->window_x, window->window_y,
+                            window->window_x + window->window_w,
+                            window->window_y + window->window_h, 5, EUI_MODE_SET);
+
+    /* 文本区（右侧留进度条），按 view_offset 滑动绘制 */
+    Area ta = {window->window_x + 4, window->window_y + 3,
+               window->window_x + 4 + data->text_w - 1,
+               window->window_y + window->window_h - 4};
+    canvas_clip_push(c_it->canvas, &ta);
+    eui_uint16_t r;
+    for (r = 0; r < data->line_num; r++) {
+        int ty = window->window_y + 3 + (int)(r * data->font_height) - data->view_offset;
+        if (ty + (int)data->font_height <= window->window_y + 3) continue;   /* 已滚出显示区上方 */
+        if (ty >= window->window_y + 3 + (int)data->inner_h) break;          /* 行顶越过显示区底部才跳过（部分滚入即绘制） */
+        if (data->msg) {
+            lt_draw_line(c_it->canvas, window->window_x + 4, ty, &ESGUI_DEFAULT_FONT,
+                         data->msg + data->line_start[r], data->text_w);
+        }
+    }
+    canvas_clip_pop(c_it->canvas);
+
+    /* 右侧纵向进度条（浏览进度） */
+    eui_uint16_t permille = 0;
+    eui_int16_t max_off = (eui_int16_t)data->total_h - (eui_int16_t)data->inner_h;
+    if (max_off > 0) {
+        eui_int16_t vo = data->view_offset;
+        if (vo < 0) vo = 0;
+        if (vo > max_off) vo = max_off;
+        permille = (eui_uint16_t)((eui_int32_t)vo * 1000 / max_off);
+    }
+    ESGUI_WidgetProgrssBarChangeLenPermille(c_it->canvas,
+        window->window_x + window->window_w - 4, window->window_y + 5,
+        ESGUI_PROGRESS_BAR_W, window->window_h - 10, permille, ESGUI_WIDGET_PROGBAR_DOWN);
+    canvas_clip_pop(c_it->canvas);
+}
+
+void esgui_default_message_longtext_popwindow_on_page_change(ESGUI_MenuPage_T *page, ESGUI_MenuAction_T *action) {
+    if (page == ESGUI_NULL || action == ESGUI_NULL) return;
+    ESGUI_PopWindow_T *window = (ESGUI_PopWindow_T*)page;
+    CanvasStripIter *c_it = window->render_ctx;
+    switch (action->act) {
+        case ACT_SHOW_POPUP:
+            start_popwindow_window_anim(window, 0 - window->window_h - 10,
+                                        (canvas_get_height(c_it) - window->window_h) / 2,
+                                        400, ANIM_PATH_OVERSHOOT);
+            break;
+        case ACT_CLOSE_POPUP:
+            start_popwindow_window_anim(window, window->window_y,
+                                        0 - window->window_h - 10, 400, ANIM_PATH_EASE_IN_OUT);
+            break;
+        default:
+            break;
+    }
+}
+
+static const esgui_page_vtable_t message_longtext_popwindow_vtable = {
+    .on_create         = esgui_default_message_longtext_popwindow_on_create,
+    .on_destroy        = esgui_default_message_longtext_popwindow_on_destroy,
+    .on_draw           = esgui_default_message_longtext_popwindow_on_draw,
+    .special_item_draw = ESGUI_NULL,
+    .on_input          = esgui_default_message_longtext_popwindow_on_input,
+    .on_focus_change   = ESGUI_NULL,
+    .on_page_chenge    = esgui_default_message_longtext_popwindow_on_page_change,
+};
+
+void ESGUI_DefaultMessageLongTextPopWindowCreate(ESGUI_PopWindow_T *window,
+                                                 const char *message,
+                                                 eui_uint16_t window_w, eui_uint16_t window_h) {
+    if (window == ESGUI_NULL) return;
+    memset(window, 0, sizeof(ESGUI_PopWindow_T));
+    window->vtbl     = &message_longtext_popwindow_vtable;
+    window->title    = "";
+    window->window_w = window_w;
+    window->window_h = window_h;
+    window->item_num = 0;
+    window->items    = ESGUI_NULL;
+    ESGUI_DEFAULT_MESSAGE_LONGTEXT_WINDOW_DAT *dat = (ESGUI_DEFAULT_MESSAGE_LONGTEXT_WINDOW_DAT*)popup_data_alloc();
+    if (dat != ESGUI_NULL) {
+        dat->msg = message;
+    }
+    window->draw_data = dat;
+}
+
+#endif /* ESGUI_ENABLE_POPUP_LONGTEXT */
+
+
+#if ESGUI_ENABLE_MULTILINE_EDIT
+
+/* ========== 多行文本编辑页 ========== */
+
+/**
+ * @brief 多行编辑页私有数据
+ * @note  页面全屏：标题栏 + 多行文本区 + 底部键盘；
+ *        直接编辑用户工作缓冲 work_buf，返回即保存。
+ */
+typedef struct esgui_default_multiline_edit_page_dat {
+    ESGUI_MultiLineEditBox_T ed;                /**< 多行文本框组件 */
+    ESGUI_KeyBoard_T kb;                        /**< 键盘组件 */
+    char *work_buf;                             /**< 用户工作缓冲 */
+    eui_uint16_t work_size;                     /**< 工作缓冲容量 */
+    const char *init_text;                      /**< 初始文本（on_create 装入 work_buf） */
+    eui_uint16_t caret_pulse;                   /**< 光标闪烁脉冲动画变量 */
+    eui_uint16_t title_h;                       /**< 标题栏高度 */
+    eui_uint16_t edit_area_h;                   /**< 文本区高度 */
+    eui_uint16_t kb_area_h;                     /**< 键盘区高度 */
+    eui_uint16_t font_height;                   /**< 字体行高 */
+    eui_uint16_t trans_count;                   /**< 页面过渡遮罩级别（0~8，0=无遮罩） */
+    eui_uint8_t  trans_active;                  /**< 过渡动画运行标志（1=运行中） */
+} ESGUI_DEFAULT_MULTILINE_EDIT_PAGE_DAT;
+
+/** @brief 多行编辑页私有数据静态池 */
+static ESGUI_DEFAULT_MULTILINE_EDIT_PAGE_DAT s_ml_edit_pool[ESGUI_MULTILINE_EDIT_PAGE_POOL_SIZE];
+static eui_uint8_t s_ml_edit_alloc_map[ESGUI_MULTILINE_EDIT_PAGE_POOL_SIZE] = {0};
+
+static ESGUI_DEFAULT_MULTILINE_EDIT_PAGE_DAT *ml_edit_page_data_alloc(void)
+{
+    eui_uint8_t i;
+    for (i = 0; i < ESGUI_MULTILINE_EDIT_PAGE_POOL_SIZE; i++) {
+        if (s_ml_edit_alloc_map[i] == 0) {
+            s_ml_edit_alloc_map[i] = 1;
+            memset(&s_ml_edit_pool[i], 0, sizeof(ESGUI_DEFAULT_MULTILINE_EDIT_PAGE_DAT));
+            return &s_ml_edit_pool[i];
+        }
+    }
+    return ESGUI_NULL;
+}
+
+static void ml_edit_page_data_free(ESGUI_DEFAULT_MULTILINE_EDIT_PAGE_DAT *p)
+{
+    if (p == ESGUI_NULL) return;
+    int idx = (int)(p - s_ml_edit_pool);
+    if (idx >= 0 && idx < ESGUI_MULTILINE_EDIT_PAGE_POOL_SIZE) {
+        s_ml_edit_alloc_map[idx] = 0;
+    }
+}
+
+void esgui_default_multiline_edit_page_on_create(ESGUI_MenuPage_T *page) {
+    if (page == ESGUI_NULL) return;
+    CanvasStripIter *c_it = page->render_ctx;
+    ESGUI_DEFAULT_MULTILINE_EDIT_PAGE_DAT *data = (ESGUI_DEFAULT_MULTILINE_EDIT_PAGE_DAT*)page->draw_data;
+    if (data == ESGUI_NULL) return;
+
+    data->font_height = (eui_uint16_t)eui_get_text_height(&ESGUI_KEY_BOARD_FONT, "0");
+    data->title_h = (page->title && page->title[0]) ? (eui_uint16_t)(data->font_height + 4) : 4;
+
+    int sw = canvas_get_width(c_it);
+    int sh = canvas_get_height(c_it);
+    data->kb_area_h = (eui_uint16_t)(sh / 2);
+    if (data->kb_area_h < 16) data->kb_area_h = 16;
+    data->edit_area_h = (sh > (int)(data->kb_area_h + data->title_h))
+                        ? (eui_uint16_t)(sh - data->kb_area_h - data->title_h) : 1;
+
+    /* 多行文本框（绑定用户工作缓冲） */
+    ESGUI_MultiLineEditBoxInit(&data->ed, data->work_buf, data->work_size);
+    if (data->init_text && data->work_buf) {
+        eui_uint16_t n = 0;
+        while (data->init_text[n] != '\0' && n + 1 < data->work_size) {
+            data->work_buf[n] = data->init_text[n];
+            n++;
+        }
+        data->work_buf[n] = '\0';
+        data->ed.len = n;
+        data->ed.row = 0;
+        data->ed.col = 0;
+        ESGUI_MultiLineEditBoxRebuildLines(&data->ed);
+    }
+
+    /* 键盘（底部，全宽） */
+    ESGUI_KeyBoardInit(&data->kb, &ESGUI_KEY_BOARD_FONT,
+                       0, sh - (eui_int16_t)data->kb_area_h,
+                       (eui_uint16_t)sw, data->kb_area_h, 0);
+}
+
+void esgui_default_multiline_edit_page_on_destroy(ESGUI_MenuPage_T *page) {
+    if (page == ESGUI_NULL) return;
+    if (page->draw_data != ESGUI_NULL) {
+        ESGUI_DEFAULT_MULTILINE_EDIT_PAGE_DAT *dat = (ESGUI_DEFAULT_MULTILINE_EDIT_PAGE_DAT*)page->draw_data;
+        anim_stop_all(&dat->caret_pulse);
+        anim_stop_all(&dat->trans_count);
+        ml_edit_page_data_free(dat);
+        page->draw_data = ESGUI_NULL;
+    }
+    page->render_ctx = ESGUI_NULL;
+}
+
+ESGUI_MenuAction_T esgui_default_multiline_edit_page_on_input(ESGUI_MenuPage_T *page, ESGUI_EventCode_t e) {
+    if (page == ESGUI_NULL) return (ESGUI_MenuAction_T){ACT_NONE, ESGUI_NULL};
+    ESGUI_DEFAULT_MULTILINE_EDIT_PAGE_DAT *data = (ESGUI_DEFAULT_MULTILINE_EDIT_PAGE_DAT*)page->draw_data;
+    if (data == ESGUI_NULL) return (ESGUI_MenuAction_T){ACT_NONE, ESGUI_NULL};
+
+    if (e == EVT_KEY_BACK) {
+        return (ESGUI_MenuAction_T){ACT_POP_PAGE, ESGUI_NULL};   /* 返回即保存 */
+    }
+
+    /* 方向键：移动键盘焦点 */
+    if (e == EVT_KEY_UP || e == EVT_KEY_DOWN || e == EVT_KEY_LEFT || e == EVT_KEY_RIGHT) {
+        char ch = 0;
+        ESGUI_KeyAction_T act = ESGUI_KEY_CHAR;
+        bool handled = ESGUI_KeyBoardHandleEvent(&data->kb, e, &ch, &act);
+        return handled ? (ESGUI_MenuAction_T){ACT_REFRESH, ESGUI_NULL}
+                       : (ESGUI_MenuAction_T){ACT_NONE, ESGUI_NULL};
+    }
+
+    /* 确认键：触发当前键动作 */
+    if (e == EVT_KEY_OK || e == EVT_CLICKED) {
+        char ch = 0;
+        ESGUI_KeyAction_T act = ESGUI_KEY_CHAR;
+        ESGUI_KeyBoardHandleEvent(&data->kb, e, &ch, &act);
+        switch (act) {
+            case ESGUI_KEY_CHAR:
+            case ESGUI_KEY_SPACE:
+                ESGUI_MultiLineEditBoxInsert(&data->ed, (act == ESGUI_KEY_SPACE) ? ' ' : ch);
+                break;
+            case ESGUI_KEY_SHIFT:
+                data->kb.shift = data->kb.shift ? 0 : 1;
+                break;
+            case ESGUI_KEY_PAGE_ABC:
+                ESGUI_KeyBoardSetPage(&data->kb, 0);
+                break;
+            case ESGUI_KEY_PAGE_NUM:
+                ESGUI_KeyBoardSetPage(&data->kb, 1);
+                break;
+            case ESGUI_KEY_BACKSPACE:
+                ESGUI_MultiLineEditBoxBackspace(&data->ed);
+                break;
+            case ESGUI_KEY_CURSOR_LEFT:
+                ESGUI_MultiLineEditBoxCursorMove(&data->ed, -1);
+                break;
+            case ESGUI_KEY_CURSOR_RIGHT:
+                ESGUI_MultiLineEditBoxCursorMove(&data->ed, 1);
+                break;
+            case ESGUI_KEY_CURSOR_UP:
+                ESGUI_MultiLineEditBoxCursorMove(&data->ed, -2);
+                break;
+            case ESGUI_KEY_CURSOR_DOWN:
+                ESGUI_MultiLineEditBoxCursorMove(&data->ed, 2);
+                break;
+            case ESGUI_KEY_ENTER:      /* 多行编辑：OK 键 = 换行 */
+                ESGUI_MultiLineEditBoxInsert(&data->ed, '\n');
+                break;
+            case ESGUI_KEY_CANCEL:     /* X 键 = 返回保存 */
+                return (ESGUI_MenuAction_T){ACT_POP_PAGE, ESGUI_NULL};
+            default:
+                break;
+        }
+        return (ESGUI_MenuAction_T){ACT_REFRESH, ESGUI_NULL};
+    }
+
+    return (ESGUI_MenuAction_T){ACT_NONE, ESGUI_NULL};
+}
+
+void esgui_default_multiline_edit_page_on_draw(ESGUI_MenuPage_T *page) {
+    if (page == ESGUI_NULL) return;
+    CanvasStripIter *c_it = page->render_ctx;
+    ESGUI_DEFAULT_MULTILINE_EDIT_PAGE_DAT *data = (ESGUI_DEFAULT_MULTILINE_EDIT_PAGE_DAT*)page->draw_data;
+    if (data == ESGUI_NULL) return;
+
+    /* 光标闪烁脉冲：编辑期间保持持续刷新 */
+    if (!anim_is_running_var(&data->caret_pulse)) {
+        anim_t pulse = {0};
+        pulse.var          = &data->caret_pulse;
+        pulse.exec_cb      = anim_cb_uint16;
+        pulse.start        = 0;
+        pulse.end          = 0;
+        pulse.duration     = 100;
+        pulse.path_type    = ANIM_PATH_LINEAR;
+        pulse.repeat_cnt   = 0xFFFF;
+        pulse.repeat_total = 0xFFFF;
+        anim_start(&pulse);
+    }
+
+    int sw = canvas_get_width(c_it);
+    int sh = canvas_get_height(c_it);
+    bool caret_on = ((anim_get_tick() / 500) & 1) ? true : false;
+
+    /* 全屏黑底 */
+    eui_draw_rect_fill(c_it->canvas, 0, 0, sw - 1, sh - 1, EUI_MODE_CLER);
+
+    /* 标题 */
+    if (page->title && page->title[0]) {
+        eui_draw_text(c_it->canvas, 2, 2, &ESGUI_KEY_BOARD_FONT, page->title, 1);
+        eui_draw_hline(c_it->canvas, 0, sw - 1, data->title_h - 2, EUI_MODE_SET);
+    }
+
+    /* 多行文本区 */
+    Area ta = {0, data->title_h, sw - 1, sh - (int)data->kb_area_h - 1};
+    canvas_clip_push(c_it->canvas, &ta);
+    ESGUI_MultiLineEditBoxDraw(c_it->canvas, &data->ed, 0, data->title_h,
+                               (eui_uint16_t)sw, data->edit_area_h,
+                               &ESGUI_KEY_BOARD_FONT, caret_on);
+    canvas_clip_pop(c_it->canvas);
+
+    /* 键盘（底部，随页面整体绘制） */
+    data->kb.kb_y = sh - (eui_int16_t)data->kb_area_h;
+    Area kba = {0, sh - (int)data->kb_area_h, sw - 1, sh - 1};
+    canvas_clip_push(c_it->canvas, &kba);
+    ESGUI_KeyBoardDraw(c_it->canvas, &data->kb);
+    canvas_clip_pop(c_it->canvas);
+
+    /* 页面切换过渡遮罩（与其它页面一致：进入 8→0 淡入，退出 0→8 淡出） */
+    if (data->trans_count) {
+        canvas_apply_transition_mask(c_it->canvas, (eui_uint8_t)data->trans_count);
+    }
+}
+
+/** @brief 多行编辑页过渡动画结束回调：清零 trans_active */
+static void ml_trans_anim_ready_cb(struct anim_t *a) {
+    if (!a || !a->var) return;
+    ESGUI_DEFAULT_MULTILINE_EDIT_PAGE_DAT *dat = (ESGUI_DEFAULT_MULTILINE_EDIT_PAGE_DAT *)
+        ((eui_uint8_t *)a->var - offsetof(ESGUI_DEFAULT_MULTILINE_EDIT_PAGE_DAT, trans_count));
+    dat->trans_active = 0;
+}
+
+/** @brief 启动页面过渡动画：exit=0 淡入(8→0)，exit=1 淡出(0→8, must_complete) */
+static void ml_start_transition_anim(ESGUI_MenuPage_T *page, eui_uint8_t exit_mode)
+{
+    if (page == ESGUI_NULL || page->draw_data == ESGUI_NULL) return;
+    ESGUI_DEFAULT_MULTILINE_EDIT_PAGE_DAT *dat = (ESGUI_DEFAULT_MULTILINE_EDIT_PAGE_DAT*)page->draw_data;
+    if (dat->trans_active) return;
+
+    anim_t anim = {0};
+    anim.var       = &dat->trans_count;
+    anim.start     = exit_mode ? 0 : 8;
+    anim.end       = exit_mode ? 8 : 0;
+    anim.exec_cb   = anim_cb_uint16;
+    anim.duration  = ESGUI_PAGE_TRANSITION_ANIM_TIME;
+    anim.path_type = ANIM_PATH_LINEAR;
+    anim.ready_cb  = ml_trans_anim_ready_cb;
+    if (exit_mode) {
+        anim_set_must_complete(&anim, 1);   /* 阻塞真正 Pop，保证退出动画完整播放 */
+    }
+    anim_start(&anim);
+    dat->trans_active = 1;
+}
+
+void esgui_default_multiline_edit_page_on_page_change(ESGUI_MenuPage_T *page, ESGUI_MenuAction_T *action) {
+    if (page == ESGUI_NULL || action == ESGUI_NULL) return;
+    switch (action->act) {
+        case ACT_PUSH_PAGE:
+            ml_start_transition_anim(page, 0);   /* 进入淡入 */
+            break;
+        case ACT_POP_PAGE:
+            ml_start_transition_anim(page, 1);   /* 退出淡出 */
+            break;
+        default:
+            break;
+    }
+}
+
+static const esgui_page_vtable_t multiline_edit_page_vtable = {
+    .on_create         = esgui_default_multiline_edit_page_on_create,
+    .on_destroy        = esgui_default_multiline_edit_page_on_destroy,
+    .on_draw           = esgui_default_multiline_edit_page_on_draw,
+    .special_item_draw = ESGUI_NULL,
+    .on_input          = esgui_default_multiline_edit_page_on_input,
+    .on_focus_change   = ESGUI_NULL,
+    .on_page_chenge    = esgui_default_multiline_edit_page_on_page_change,
+};
+
+void ESGUI_MultiLineEditPageCreate(ESGUI_MenuPage_T *page, const char *title,
+                                   char *work_buf, eui_uint16_t work_size,
+                                   const char *init_text) {
+    if (page == ESGUI_NULL || work_buf == ESGUI_NULL || work_size == 0) return;
+    memset(page, 0, sizeof(ESGUI_MenuPage_T));
+    page->vtbl     = &multiline_edit_page_vtable;
+    page->title    = (title == ESGUI_NULL) ? "" : title;
+    page->item_num = 0;
+    page->items    = ESGUI_NULL;
+    ESGUI_DEFAULT_MULTILINE_EDIT_PAGE_DAT *dat = ml_edit_page_data_alloc();
+    if (dat != ESGUI_NULL) {
+        dat->work_buf   = work_buf;
+        dat->work_size  = work_size;
+        dat->init_text  = init_text;
+    }
+    page->draw_data = dat;
+}
+
+#endif /* ESGUI_ENABLE_MULTILINE_EDIT */
+
+
 
 
 /* ============================================================
@@ -4834,7 +5718,9 @@ void ESGUI_DefaultBMPListScrollTitlePopWindowCreate(ESGUI_PopWindow_T *window, c
  * 使用 Union 确保内存大小等于最大成员，避免为每个弹窗单独分配。
  */
 
-#if (ESGUI_ENABLE_POPUP_MESSAGE || ESGUI_ENABLE_POPUP_BOOL || ESGUI_ENABLE_POPUP_VALUE || ESGUI_ENABLE_POPUP_TEXTLIST || ESGUI_ENABLE_POPUP_BMPLIST)
+#if (ESGUI_ENABLE_POPUP_MESSAGE || ESGUI_ENABLE_POPUP_BOOL || ESGUI_ENABLE_POPUP_VALUE || \
+     ESGUI_ENABLE_POPUP_TEXTLIST || ESGUI_ENABLE_POPUP_BMPLIST || ESGUI_ENABLE_KEYBOARD || \
+     ESGUI_ENABLE_POPUP_LONGTEXT)
 
 /**
  * @brief 弹窗数据 Union（所有弹窗数据结构的联合体）
@@ -4856,33 +5742,48 @@ typedef union {
 #if ESGUI_ENABLE_POPUP_BMPLIST
     ESGUI_DEFAULT_BMP_LIST_WINDOW_DAT   bmp;    /**< BMP 列表弹窗数据 */
 #endif
+#if ESGUI_ENABLE_KEYBOARD
+    ESGUI_DEFAULT_KEYBOARD_WINDOW_DAT   kbd;    /**< 键盘输入弹窗数据 */
+#endif
+#if ESGUI_ENABLE_POPUP_LONGTEXT
+    ESGUI_DEFAULT_MESSAGE_LONGTEXT_WINDOW_DAT lt; /**< 长文本消息弹窗数据 */
+#endif
 } ESGUI_PopWindowData_Union;
 
-/** @brief 通用弹窗数据静态实例 */
-static ESGUI_PopWindowData_Union s_popup_data;
-/** @brief 弹窗数据占用标志（0=空闲，1=占用） */
-static eui_uint8_t s_popup_data_busy = 0;
+/** @brief 通用弹窗数据静态池：每个弹窗独占一个槽位，支持多个弹窗同时存在 */
+static ESGUI_PopWindowData_Union s_popup_data[ESGUI_MAX_POPUP_DEPTH];
+/** @brief 弹窗数据槽位占用位图（bit i=1 表示 s_popup_data[i] 被占用，深度≤32） */
+static eui_uint32_t s_popup_data_alloc_map = 0;
 
 /**
  * @brief 分配通用弹窗数据内存
- * @return 数据指针，若已有弹窗在运行则返回 ESGUI_NULL
+ * @return 数据指针，池满则返回 ESGUI_NULL
  * @note  自动清零内存，确保初始状态干净
  */
 static void* popup_data_alloc()
 {
-    if (s_popup_data_busy) return ESGUI_NULL;
-    s_popup_data_busy = 1;
-    memset(&s_popup_data, 0, sizeof(s_popup_data));
-    return (void*)&s_popup_data;
+    for (eui_uint8_t i = 0; i < ESGUI_MAX_POPUP_DEPTH; i++) {
+        if (!(s_popup_data_alloc_map & (1u << i))) {
+            s_popup_data_alloc_map |= (1u << i);
+            memset(&s_popup_data[i], 0, sizeof(s_popup_data[i]));
+            return (void*)&s_popup_data[i];
+        }
+    }
+    return ESGUI_NULL;
 }
 
 /**
  * @brief 释放通用弹窗数据内存
- * @note  仅清零占用标志，不实际清除数据（下次 alloc 会 memset）
+ * @param ptr 待释放的数据指针（必须是 popup_data_alloc 的返回值）
+ * @note  仅清零对应槽位占用标志，不实际清除数据（下次 alloc 会 memset）
  */
-static void popup_data_free()
+static void popup_data_free(void *ptr)
 {
-    s_popup_data_busy = 0;
+    if (ptr == ESGUI_NULL) return;
+    eui_uint32_t idx = (eui_uint32_t)((ESGUI_PopWindowData_Union*)ptr - s_popup_data);
+    if (idx < ESGUI_MAX_POPUP_DEPTH) {
+        s_popup_data_alloc_map &= ~(1u << idx);
+    }
 }
 
 #endif

@@ -67,38 +67,60 @@ void ESGUI_MenuCtrlPopPage(ESGUI_MenuCtrl_T *emc) {
 }
 
 /**
- * @brief 显示模态弹窗
+ * @brief 显示模态弹窗（压入弹窗栈）
  * @param emc   菜单控制器实例指针
  * @param popup 弹窗页面指针
  * @return 无
  *
- * 说明：弹窗显示后，输入事件优先路由到弹窗处理，形成模态覆盖效果。
+ * 说明：支持多个弹窗叠放：新弹窗压入栈顶后，输入事件优先路由到栈顶弹窗，
+ * 关闭栈顶弹窗后自动回到下一层弹窗。同一弹窗指针不重复压栈。
  */
 void ESGUI_MenuCtrlShowPopWindow(ESGUI_MenuCtrl_T *emc, ESGUI_PopWindow_T *popup) {
     if (emc == ESGUI_NULL || popup == ESGUI_NULL || emc->running_en == 0) return;
 
-    emc->pop_window = popup;
+    /* 防重复：同一弹窗已在栈中则不重复压入 */
+    for (eui_uint8_t i = 0; i < emc->pop_depth; i++) {
+        if (emc->pop_stack[i] == popup) return;
+    }
+    if (emc->pop_depth >= ESGUI_MAX_POPUP_DEPTH) return;
+
+    emc->pop_stack[emc->pop_depth] = popup;
+    emc->pop_depth++;
     emc->pop_window_en = 1;
     emc->need_refresh = 1;
 }
 
 /**
- * @brief 关闭当前模态弹窗
+ * @brief 关闭栈顶模态弹窗
  * @param emc 菜单控制器实例指针
  * @return 无
  *
- * 说明：清除弹窗指针并禁用弹窗标志，恢复页面正常输入响应。
+ * 说明：销毁栈顶弹窗并出栈；若栈中仍有下层弹窗，则其成为新的输入焦点。
  */
 void ESGUI_MenuCtrlClosePopWindow(ESGUI_MenuCtrl_T *emc) {
     if (emc == ESGUI_NULL || emc->running_en == 0) return;
 
-    if (emc->pop_window && emc->pop_window->vtbl->on_destroy) {
-        emc->pop_window->vtbl->on_destroy((ESGUI_MenuPage_T*)emc->pop_window);
+    if (emc->pop_depth > 0) {
+        ESGUI_PopWindow_T *top = emc->pop_stack[emc->pop_depth - 1];
+        if (top && top->vtbl->on_destroy) {
+            top->vtbl->on_destroy((ESGUI_MenuPage_T*)top);
+        }
+        emc->pop_stack[emc->pop_depth - 1] = ESGUI_NULL;
+        emc->pop_depth--;
     }
-
-    emc->pop_window = ESGUI_NULL;
-    emc->pop_window_en = 0;
+    emc->pop_window_en = (emc->pop_depth > 0) ? 1 : 0;
     emc->need_refresh = 1;
+
+    /* 弹窗关闭后重排底层页面布局：弹窗操作可能改动了条目特殊宽度/arg 等，
+     * 而布局缓存（text_need_len/焦点框宽度）只在 recenter 中刷新，
+     * 此处调用 on_relayout（无过渡动画）保证关闭弹窗后布局立即一致。
+     * on_relayout 为 NULL（未启用运行时条目增删 / 页面无实现）时自然跳过。 */
+    if (emc->menu_depth > 0) {
+        ESGUI_MenuPage_T *page = emc->page_stack[emc->menu_depth - 1];
+        if (page && page->vtbl && page->vtbl->on_relayout) {
+            page->vtbl->on_relayout(page, page->focus_idx, page->focus_idx);
+        }
+    }
 }
 
 /**
@@ -143,13 +165,26 @@ void ESGUI_MenuCtrlHandleAction(ESGUI_MenuCtrl_T *emc, ESGUI_MenuAction_T *act)
             break;
 
         case ACT_CLOSE_POPUP:
-            if (emc->pop_window == ESGUI_NULL) break;
-            if (emc->pop_window->vtbl->on_page_chenge) {
-                emc->pop_window->vtbl->on_page_chenge((ESGUI_MenuPage_T*)emc->pop_window, act);
-                ESGUI_MenuCtrlPreparePopPage(emc);
-            }
-            else {
-                ESGUI_MenuCtrlClosePopWindow(emc);
+            if (emc->pop_depth == 0) break;
+            {
+                ESGUI_PopWindow_T *top_popup = emc->pop_stack[emc->pop_depth - 1];
+                /* 弹窗关闭动作一开始即重排底层页面：弹窗操作可能改动了条目特殊
+                 * 宽度/arg 等，而布局缓存只在 recenter 中刷新。提前重排可保证
+                 * 关闭过渡动画期间的渲染帧即采用新布局，避免焦点框从旧宽度跳变。
+                 * on_relayout 为 NULL（未启用运行时条目增删/页面无实现）时跳过。 */
+                if (emc->menu_depth > 0) {
+                    ESGUI_MenuPage_T *base_page = emc->page_stack[emc->menu_depth - 1];
+                    if (base_page && base_page->vtbl && base_page->vtbl->on_relayout) {
+                        base_page->vtbl->on_relayout(base_page, base_page->focus_idx, base_page->focus_idx);
+                    }
+                }
+                if (top_popup->vtbl->on_page_chenge) {
+                    top_popup->vtbl->on_page_chenge((ESGUI_MenuPage_T*)top_popup, act);
+                    ESGUI_MenuCtrlPreparePopPage(emc);
+                }
+                else {
+                    ESGUI_MenuCtrlClosePopWindow(emc);
+                }
             }
             break;
 
@@ -179,8 +214,8 @@ bool ESGUI_MenuCtrlPreparePopPage(ESGUI_MenuCtrl_T *emc) {
     emc->pending_pop = 1;
     emc->need_refresh = 1;
 
-    if (emc->pop_window_en && emc->pop_window) {
-        emc->pending_destroy_page = (ESGUI_MenuPage_T*)emc->pop_window;
+    if (emc->pop_window_en && emc->pop_depth > 0) {
+        emc->pending_destroy_page = (ESGUI_MenuPage_T*)emc->pop_stack[emc->pop_depth - 1];
         return true;
     }
 
@@ -196,14 +231,14 @@ void ESGUI_MenuCtrlExecPendingPop(ESGUI_MenuCtrl_T *emc) {
     if (emc == ESGUI_NULL || !emc->pending_pop) return;
 
     ESGUI_MenuPage_T *page = emc->pending_destroy_page;
-    bool was_popup = (emc->pop_window_en && emc->pop_window &&
-                      (ESGUI_MenuPage_T*)emc->pop_window == page);
+    bool was_popup = (emc->pop_window_en && emc->pop_depth > 0 &&
+                      (ESGUI_MenuPage_T*)emc->pop_stack[emc->pop_depth - 1] == page);
 
     if (page && page->vtbl && page->vtbl->on_destroy) {
         page->vtbl->on_destroy(page);
     }
 
-    if (emc->pop_window_en && emc->pop_window) {
+    if (emc->pop_window_en && emc->pop_depth > 0) {
         ESGUI_MenuCtrlClosePopWindow(emc);
     }
     else {
@@ -219,6 +254,43 @@ void ESGUI_MenuCtrlExecPendingPop(ESGUI_MenuCtrl_T *emc) {
 
     emc->pending_pop = 0;
     emc->pending_done = 0;
+}
+
+/**
+ * @brief 入队延迟动作
+ * @param emc 菜单控制器实例指针
+ * @param act 待排队的动作
+ * @return 无
+ * @note  排队动作将在"当前动作（如弹窗滑出动画）完成"后由 ESGUI_Tick
+ *        依次取出执行。典型用法：弹窗 on_enter 中先把"关闭下层弹窗"入队，
+ *        再返回"关闭当前弹窗"动作，实现一次按键连续关闭多层弹窗。
+ *        队列满或动作为 ACT_NONE 时忽略。
+ */
+void ESGUI_MenuCtrlQueueAction(ESGUI_MenuCtrl_T *emc, ESGUI_MenuAction_T act) {
+    if (emc == ESGUI_NULL || act.act == ACT_NONE) return;
+    if (emc->pending_act_count >= ESGUI_MENU_PENDING_ACT_QUEUE_SIZE) return;
+    emc->pending_act_queue[emc->pending_act_tail] = act;
+    emc->pending_act_tail = (eui_uint8_t)((emc->pending_act_tail + 1) % ESGUI_MENU_PENDING_ACT_QUEUE_SIZE);
+    emc->pending_act_count++;
+}
+
+/**
+ * @brief 出队执行延迟动作队列
+ * @param emc 菜单控制器实例指针
+ * @return 无
+ * @note  由 ESGUI_Tick 在"当前无待处理动作"时调用：循环取出队头动作执行；
+ *        若某动作触发了 must_complete 动画（进入 pending_push/pending_pop
+ *        延迟流程）则停止，待动画完成后的下一个 Tick 再次调用续取。
+ */
+void ESGUI_MenuCtrlExecQueuedAction(ESGUI_MenuCtrl_T *emc) {
+    if (emc == ESGUI_NULL || emc->running_en == 0) return;
+    while (emc->pending_act_count > 0) {
+        if (emc->pending_push || emc->pending_pop) break;   /* 前一动作进入延迟流程，等动画完成 */
+        ESGUI_MenuAction_T act = emc->pending_act_queue[emc->pending_act_head];
+        emc->pending_act_head = (eui_uint8_t)((emc->pending_act_head + 1) % ESGUI_MENU_PENDING_ACT_QUEUE_SIZE);
+        emc->pending_act_count--;
+        ESGUI_MenuCtrlHandleAction(emc, &act);
+    }
 }
 
 
@@ -285,9 +357,29 @@ static void menu_page_shrink(ESGUI_MenuPage_T *page)
     page->item_cap = new_cap;
 }
 
+/**
+ * @brief 判断动态菜单是否处于"仅含空占位条目"状态
+ * @param page 页面指针
+ * @return true=刚由 ESGUI_DynamicTextMenuCreate 创建（item_auto_expand=1 且仅剩 1 条空 label）
+ * @note  占位条目用于维持 item_num>=1 框架不变量；首次增删时直接覆盖占位，
+ *        避免出现"空条目 + 真实条目"两个条目。
+ */
+static bool menu_page_has_placeholder(ESGUI_MenuPage_T *page)
+{
+    if (page == ESGUI_NULL || page->items == ESGUI_NULL) return false;
+    if (page->item_auto_expand == 0 || page->item_num != 1) return false;
+    const char *lbl = page->items[0].label;
+    return (lbl == ESGUI_NULL || lbl[0] == '\0');
+}
+
 bool ESGUI_MenuPageAddItem(ESGUI_MenuPage_T *page, const ESGUI_MenuItem_T *item)
 {
     if (page == ESGUI_NULL || item == ESGUI_NULL || page->items == ESGUI_NULL) return false;
+    if (menu_page_has_placeholder(page)) {
+        page->items[0] = *item;                                             /* 覆盖占位，而不是追加 */
+        menu_page_relayout(page, page->focus_idx, page->focus_idx);
+        return true;
+    }
     if (page->item_num >= page->item_cap) {
         if (!menu_page_grow(page)) return false;                            /* 容量不足：静态返回 false，动态自动扩容 */
     }
@@ -300,6 +392,11 @@ bool ESGUI_MenuPageAddItem(ESGUI_MenuPage_T *page, const ESGUI_MenuItem_T *item)
 bool ESGUI_MenuPageInsertItem(ESGUI_MenuPage_T *page, eui_uint16_t idx, const ESGUI_MenuItem_T *item)
 {
     if (page == ESGUI_NULL || item == ESGUI_NULL || page->items == ESGUI_NULL) return false;
+    if (menu_page_has_placeholder(page)) {
+        page->items[0] = *item;                                             /* 覆盖占位（此时仅 1 条，idx 无意义） */
+        menu_page_relayout(page, page->focus_idx, page->focus_idx);
+        return true;
+    }
     if (idx > page->item_num) idx = page->item_num;                         /* 越界视为尾部插入 */
     if (page->item_num >= page->item_cap) {
         if (!menu_page_grow(page)) return false;                            /* 容量不足：静态返回 false，动态自动扩容 */

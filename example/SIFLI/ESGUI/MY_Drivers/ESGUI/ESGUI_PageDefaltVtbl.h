@@ -31,6 +31,10 @@ typedef struct {
     bool (*step)(void *ctx, eui_int8_t direction);
 } ESGUI_ValueDesc_T;
 
+
+eui_uint8_t _int16_to_str(eui_int16_t v, char *out);
+
+
 /* ========== 默认文本菜单 ========== */
 #if ESGUI_ENABLE_TEXT_MENU
 
@@ -67,18 +71,26 @@ void esgui_text_menu_defalt_on_destroy(ESGUI_MenuPage_T *page);
 void esgui_text_menu_defalt_on_focus_change(ESGUI_MenuPage_T *page, eui_uint16_t old_idx, eui_uint16_t new_idx);
 ESGUI_MenuAction_T esgui_menu_defalt_on_input(ESGUI_MenuPage_T *page, ESGUI_EventCode_t e);
 void esgui_text_menu_defalt_on_draw(ESGUI_MenuPage_T *page);
-eui_uint16_t esgui_text_menu_defalt_special_item_draw(ESGUI_MenuPage_T *page, eui_uint16_t indx);
-eui_uint16_t esgui_text_menu_defalt_get_special_item_draw_w(ESGUI_MenuPage_T *page, eui_uint16_t indx);
+eui_uint16_t esgui_text_menu_defalt_special_item_draw(ESGUI_MenuPage_T *page, eui_uint16_t indx, bool measure);
 void esgui_text_menu_default_on_page_change(ESGUI_MenuPage_T *page, ESGUI_MenuAction_T *action);
 
 void ESGUI_DefaltTextMenuCreate(ESGUI_MenuPage_T *page,
                                 ESGUI_MenuItem_T *items, const char *title,
                                 eui_uint32_t item_num);
 
+
+#if ESGUI_ENABLE_MENU_RUNTIME_ITEMS
+void esgui_text_menu_relayout(ESGUI_MenuPage_T *page, eui_uint16_t old_focus, eui_uint16_t new_focus);
+#endif
+
+
+
+
 /* 动态文本菜单（由 ESGUI_ENABLE_DYNAMIC_TEXT_MENU 控制）：
  * 内部 malloc 条目数组（容量 cap），页面销毁时自动 free；
  * 创建后可用 ESGUI_MenuPageAddItem 等 API 动态填充（需 ESGUI_ENABLE_MENU_RUNTIME_ITEMS）。 */
 #if ESGUI_ENABLE_DYNAMIC_TEXT_MENU
+void esgui_dynamic_text_menu_on_destroy(ESGUI_MenuPage_T *page);
 bool ESGUI_DynamicTextMenuCreate(ESGUI_MenuPage_T *page, const char *title, eui_uint16_t cap);
 #endif /* ESGUI_ENABLE_DYNAMIC_TEXT_MENU */
 
@@ -125,8 +137,7 @@ void esgui_bmp_menu_defalt_on_draw(ESGUI_MenuPage_T *page);
 #if ESGUI_ENABLE_GIF
 /* 特殊条目绘制系列：名称末尾带 "\x03/7" 标记的项按 GIF 显示
  *（选中循环播放 / 未选中显示第 0 帧） */
-eui_uint16_t esgui_bmp_menu_defalt_special_item_draw(ESGUI_MenuPage_T *page, eui_uint16_t indx);
-eui_uint16_t esgui_bmp_menu_defalt_get_special_item_draw_w(ESGUI_MenuPage_T *page, eui_uint16_t indx);
+eui_uint16_t esgui_bmp_menu_defalt_special_item_draw(ESGUI_MenuPage_T *page, eui_uint16_t indx, bool measure);
 #endif
 void ESGUI_DefaultBMPMenuCreate(ESGUI_MenuPage_T *page, const char *title,
                                 ESGUI_MenuItem_T *items, eui_uint32_t item_num);
@@ -209,8 +220,10 @@ ESGUI_MenuAction_T esgui_default_bool_popwindow_on_input(ESGUI_MenuPage_T *page,
 void esgui_default_bool_popwindow_on_focus_change(ESGUI_MenuPage_T *page, eui_uint16_t old_idx, eui_uint16_t new_idx);
 void esgui_default_bool_popwindow_on_draw(ESGUI_MenuPage_T *page);
 void esgui_default_bool_popwindow_on_page_change(ESGUI_MenuPage_T *page, ESGUI_MenuAction_T *action);
-void ESGUI_DefaultBoolPopWindowCreate(ESGUI_PopWindow_T *window, const char* message,
-                                        eui_uint16_t window_w, eui_uint16_t window_h, bool *boo_val);
+void ESGUI_DefaultBoolPopWindowCreate(ESGUI_PopWindow_T *window,
+                                        const char* message,const char* true_text,const char* false_text,
+                                        eui_uint16_t window_w,eui_uint16_t window_h,
+                                        bool *boo_val);
 
 #endif /* ESGUI_ENABLE_POPUP_BOOL */
 
@@ -219,7 +232,8 @@ void ESGUI_DefaultBoolPopWindowCreate(ESGUI_PopWindow_T *window, const char* mes
 void esgui_default_bool_scroll_title_popwindow_on_create(ESGUI_MenuPage_T *page);
 void esgui_default_bool_scroll_title_popwindow_on_draw(ESGUI_MenuPage_T *page);
 void esgui_default_bool_scroll_title_popwindow_on_destroy(ESGUI_MenuPage_T *page);
-void ESGUI_DefaultBoolScrollTitlePopWindowCreate(ESGUI_PopWindow_T *window, const char* message,
+void ESGUI_DefaultBoolScrollTitlePopWindowCreate(ESGUI_PopWindow_T *window,
+                                                    const char* message,const char* true_text,const char* false_text,
                                                     eui_uint16_t window_w, eui_uint16_t window_h, bool *boo_val);
 
 #endif /* ESGUI_ENABLE_POPUP_BOOL_SCROLL_TITLE */
@@ -234,7 +248,7 @@ void esgui_default_value_popwindow_on_focus_change(ESGUI_MenuPage_T *page, eui_u
 void esgui_default_value_popwindow_on_page_change(ESGUI_MenuPage_T *page, ESGUI_MenuAction_T *action);
 void esgui_default_value_popwindow_on_draw(ESGUI_MenuPage_T *page);
 void ESGUI_DefaultValuePopWindowCreate(ESGUI_PopWindow_T *window, const char* message,
-                                         eui_uint16_t window_w, eui_uint16_t window_h, ESGUI_ValueDesc_T *value_desc);
+                                         eui_uint16_t window_w, eui_uint16_t window_h, const ESGUI_ValueDesc_T *value_desc);
 
 #endif /* ESGUI_ENABLE_POPUP_VALUE */
 
@@ -244,7 +258,7 @@ void esgui_default_value_scroll_title_popwindow_on_create(ESGUI_MenuPage_T *page
 void esgui_default_value_scroll_title_popwindow_on_draw(ESGUI_MenuPage_T *page);
 void esgui_default_value_scroll_title_popwindow_on_destroy(ESGUI_MenuPage_T *page);
 void ESGUI_DefaultValueScrollTitlePopWindowCreate(ESGUI_PopWindow_T *window, const char* message,
-                                                    eui_uint16_t window_w, eui_uint16_t window_h, ESGUI_ValueDesc_T *value_desc);
+                                                    eui_uint16_t window_w, eui_uint16_t window_h, const ESGUI_ValueDesc_T *value_desc);
 
 #endif /* ESGUI_ENABLE_POPUP_VALUE_SCROLL_TITLE */
 
@@ -297,6 +311,77 @@ void ESGUI_DefaultBMPListScrollTitlePopWindowCreate(ESGUI_PopWindow_T *window, c
                                                       ESGUI_MenuItem_T *items, eui_uint32_t item_num);
 
 #endif /* ESGUI_ENABLE_POPUP_BMPLIST_SCROLL_TITLE */
+
+/* ========== 键盘输入弹窗 ========== */
+#if ESGUI_ENABLE_KEYBOARD
+
+void esgui_default_keyboard_popwindow_on_create(ESGUI_MenuPage_T *page);
+void esgui_default_keyboard_popwindow_on_destroy(ESGUI_MenuPage_T *page);
+ESGUI_MenuAction_T esgui_default_keyboard_popwindow_on_input(ESGUI_MenuPage_T *page, ESGUI_EventCode_t e);
+void esgui_default_keyboard_popwindow_on_draw(ESGUI_MenuPage_T *page);
+void esgui_default_keyboard_popwindow_on_page_change(ESGUI_MenuPage_T *page, ESGUI_MenuAction_T *action);
+/**
+ * @brief 创建键盘输入弹窗（顶部单行输入框 + 底部键盘，全宽/下半屏高由调用方指定）
+ * @param window    弹窗结构体指针
+ * @param window_w  弹窗宽度（全宽示例：屏幕宽）
+ * @param window_h  弹窗高度（下半屏示例：屏幕高/2，on_create 自动定位到屏幕下半部分）
+ * @param dst_buf   用户目标缓冲区（按"确定"时写入，按"取消"不写入）
+ * @param dst_size  用户目标缓冲区容量（含 '\0'，写入时按此截断）
+ * @param init_text 初始文本（可为 ESGUI_NULL）
+ */
+void ESGUI_DefaultKeyBoardPopWindowCreate(ESGUI_PopWindow_T *window,
+                                          eui_uint16_t window_w, eui_uint16_t window_h,
+                                          char *dst_buf, eui_uint16_t dst_size,
+                                          const char *init_text);
+
+#endif /* ESGUI_ENABLE_KEYBOARD */
+
+/* ========== 无按钮长文本消息弹窗 ========== */
+#if ESGUI_ENABLE_POPUP_LONGTEXT
+
+void esgui_default_message_longtext_popwindow_on_create(ESGUI_MenuPage_T *page);
+void esgui_default_message_longtext_popwindow_on_destroy(ESGUI_MenuPage_T *page);
+ESGUI_MenuAction_T esgui_default_message_longtext_popwindow_on_input(ESGUI_MenuPage_T *page, ESGUI_EventCode_t e);
+void esgui_default_message_longtext_popwindow_on_draw(ESGUI_MenuPage_T *page);
+void esgui_default_message_longtext_popwindow_on_page_change(ESGUI_MenuPage_T *page, ESGUI_MenuAction_T *action);
+/**
+ * @brief 创建无按钮长文本消息弹窗
+ * @param window    弹窗结构体指针
+ * @param message   消息文本（按弹窗宽度自动换行，支持 UTF-8 与 '\n'）
+ * @param window_w  弹窗宽度
+ * @param window_h  弹窗高度
+ * @note  文本平铺在弹窗内，右侧有纵向进度条显示浏览进度；
+ *        UP/DOWN 滚动浏览，OK/BACK 均关闭（与普通消息弹窗一致）。
+ */
+void ESGUI_DefaultMessageLongTextPopWindowCreate(ESGUI_PopWindow_T *window,
+                                                 const char *message,
+                                                 eui_uint16_t window_w, eui_uint16_t window_h);
+
+#endif /* ESGUI_ENABLE_POPUP_LONGTEXT */
+
+/* ========== 多行文本编辑页 ========== */
+#if ESGUI_ENABLE_MULTILINE_EDIT
+
+void esgui_default_multiline_edit_page_on_create(ESGUI_MenuPage_T *page);
+void esgui_default_multiline_edit_page_on_destroy(ESGUI_MenuPage_T *page);
+ESGUI_MenuAction_T esgui_default_multiline_edit_page_on_input(ESGUI_MenuPage_T *page, ESGUI_EventCode_t e);
+void esgui_default_multiline_edit_page_on_draw(ESGUI_MenuPage_T *page);
+void esgui_default_multiline_edit_page_on_page_change(ESGUI_MenuPage_T *page, ESGUI_MenuAction_T *action);
+/**
+ * @brief 创建多行文本编辑页（全屏：标题栏 + 多行文本区 + 底部键盘）
+ * @param page      页面结构体指针
+ * @param title     页面标题（可为 ESGUI_NULL）
+ * @param work_buf  用户工作缓冲（直接编辑，返回即保存）
+ * @param work_size 工作缓冲容量（含 '\0'）
+ * @param init_text 初始文本（可为 ESGUI_NULL；通常传 work_buf 表示继续编辑已有内容）
+ * @note  键盘复用 ESGUI_KeyBoard：OK 键=换行，BACK/X 键=返回保存；
+ *        ▲▼ 键上下移动光标，◀▶ 左右移动，< 退格。
+ */
+void ESGUI_MultiLineEditPageCreate(ESGUI_MenuPage_T *page, const char *title,
+                                   char *work_buf, eui_uint16_t work_size,
+                                   const char *init_text);
+
+#endif /* ESGUI_ENABLE_MULTILINE_EDIT */
 
 #ifdef __cplusplus
 }

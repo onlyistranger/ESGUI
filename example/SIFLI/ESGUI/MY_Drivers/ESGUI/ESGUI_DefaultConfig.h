@@ -14,6 +14,8 @@
 
 
 #define ESGUI_MAX_MENU_DEPTH    8   //最大菜单深度
+#define ESGUI_MAX_POPUP_DEPTH   4   //最大弹窗栈深度（同时最多叠放的弹窗数）
+#define ESGUI_MENU_PENDING_ACT_QUEUE_SIZE 8   //延迟动作队列容量（排队等待依次执行的动作数）
 
 
 /* ============================================================
@@ -112,6 +114,14 @@
  * @note  同时影响横向进度条的高度和纵向进度条的宽度
  */
 #define ESGUI_PROGRESS_BAR_W     3
+#endif
+
+#ifndef ESGUI_TEXT_RIGHT_GAP
+/**
+ * @brief 文本菜单条目文本区与右侧保留区（进度条/特殊标记）之间的最小间隔（像素）
+ * @note  长文本滚动时焦点框右缘与进度条拉开此距离；普通短文本不触发裁剪，无影响
+ */
+#define ESGUI_TEXT_RIGHT_GAP     6
 #endif
 
 #ifndef ESGUI_ITEM_SPACING
@@ -237,6 +247,35 @@
 #define ESGUI_ENABLE_DYNAMIC_TEXT_MENU  1
 #endif
 
+#ifndef ESGUI_ENABLE_KEYBOARD
+/**
+ * @brief 使能键盘输入组件（键盘弹窗 + 文本框）
+ * @note  1=开启 ESGUI_KeyBoard（键盘组件，字母/数字符号页，按钮/编码器导航）
+ *        与 ESGUI_EditBox（文本框组件）+ 键盘输入弹窗（ESGUI_DefaultKeyBoardPopWindowCreate）。
+ *        0=整套机制剔除（API 不存在，不影响其它弹窗）。
+ */
+#define ESGUI_ENABLE_KEYBOARD  1
+#endif
+
+#ifndef ESGUI_KEY_BOARD_KEY_H
+/**
+ * @brief 键盘键高（像素）
+ * @note  键宽按每行键数自动均分（屏宽/行键数），无需配置；
+ *        键盘总高 = 行数 × 本值，超过弹窗键盘区域高度时自动垂直滚动（焦点行跟随）。
+ *        小屏（如 128x64，下半屏仅 32px）建议搭配小字体并将本值调小（如 10）。
+ */
+#define ESGUI_KEY_BOARD_KEY_H  16
+#endif
+
+#ifndef ESGUI_KEYBOARD_EDIT_MAX_LEN
+/**
+ * @brief 键盘弹窗内部编辑缓冲长度（含 '\0'）
+ * @note  编辑期间文本写入此内部缓冲，按"确定"时才写入用户目标缓冲区；
+ *        按"取消"直接丢弃，不影响目标缓冲。用户目标缓冲更小时按目标容量截断。
+ */
+#define ESGUI_KEYBOARD_EDIT_MAX_LEN  32
+#endif
+
 
 /* ============================================================
  * 二.6 动态内存分配接口（动态菜单 / 运行时增删使用，可自定义）
@@ -344,6 +383,46 @@
  * @brief 使能 BMP 列表弹窗滚动标题版本
  */
 #define ESGUI_ENABLE_POPUP_BMPLIST_SCROLL_TITLE  1
+#endif
+
+#ifndef ESGUI_ENABLE_POPUP_LONGTEXT
+/**
+ * @brief 使能无按钮长文本消息弹窗（文本平铺自动换行 + 右侧进度条 + 滚动浏览）
+ * @note  1=开启 ESGUI_DefaultMessageLongTextPopWindowCreate；
+ *        文本按弹窗宽度自动换行（支持 UTF-8），UP/DOWN 滚动浏览，任意键关闭。
+ */
+#define ESGUI_ENABLE_POPUP_LONGTEXT  1
+#endif
+
+#ifndef ESGUI_LONGTEXT_POPUP_MAX_LINES
+/**
+ * @brief 长文本弹窗最大行数（行偏移表大小，超出部分并入最后一行截断显示）
+ */
+#define ESGUI_LONGTEXT_POPUP_MAX_LINES  64
+#endif
+
+#ifndef ESGUI_ENABLE_MULTILINE_EDIT
+/**
+ * @brief 使能多行文本编辑页（ESGUI_MultiLineEditPageCreate）
+ * @note  1=开启 ESGUI_MultiLineEditBox 组件 + 多行编辑页面（上文本区 + 下键盘）；
+ *        直接编辑用户工作缓冲，BACK 返回即保存。
+ */
+#define ESGUI_ENABLE_MULTILINE_EDIT  1
+#endif
+
+#ifndef ESGUI_MULTILINE_EDIT_MAX_LINES
+/**
+ * @brief 多行编辑框最大行数（行偏移表大小）
+ */
+#define ESGUI_MULTILINE_EDIT_MAX_LINES  32
+#endif
+
+#ifndef ESGUI_MULTILINE_EDIT_PAGE_POOL_SIZE
+/**
+ * @brief 多行编辑页私有数据静态内存池大小（槽位数）
+ * @note  每个槽约 100 字节 RAM；同一时间通常只有一个编辑页，默认 2 个。
+ */
+#define ESGUI_MULTILINE_EDIT_PAGE_POOL_SIZE  2
 #endif
 
 

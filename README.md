@@ -2,20 +2,37 @@
 
 ## 📋 更新日志
 
-### V2.2.0 (2026-8-22)
+### V3.0.0 (2026-8-25)
 - ### ↓↓↓ 新增 ↓↓↓
-  - ### 菜单/列表弹窗运行时增删条目：
-    - `ESGUI_MenuPageAddItem` / `ESGUI_MenuPageInsertItem` / `ESGUI_MenuPageRemoveItem`：操作静态条目数组（需设置 `item_cap`，自动重排布局并修正焦点）
-    - 动态文本菜单 `ESGUI_DynamicTextMenuCreate`：条目数组内部 malloc，销毁自动 free，`item_auto_expand` 容量自适应（增加不足自动 realloc 翻倍，删除超 2 倍自动缩容，实现真正的按需增删）
-    - `ESGUI_MENU_RUNTIME_ITEMS` 总开关：0=整套机制剔除（API 与 on_relayout 重排回调一并裁剪）
-  - ### 增删条目的异步版本（与 Async 家族一致）：
-    - `ESGUI_MenuPageAddItemAsync` / `ESGUI_MenuPageInsertItemAsync` / `ESGUI_MenuPageRemoveItemAsync`：从任意任务/中断投递，UI 线程 Tick 内执行；多任务并发用 ProducerBox 消息盒投递同结构命令
-  - ### 多线程方式独立开关：
-    - `ESGUI_ENABLE_CMD_QUEUE`：主命令队列方式（Async 入主队列），0=Async 退化为同步直调
-    - `ESGUI_ENABLE_PRODUCER_BOX`：生产者消息盒方式，0=消息盒类型/函数整体剔除
-  - ### 动态内存接口宏：
-    - `ESGUI_MALLOC` / `ESGUI_FREE` / `ESGUI_REALLOC`：可自定义内存分配器（如 ESP-IDF `heap_caps_*` 指定 PSRAM、自定义内存池），默认标准库
-  - README 补充：菜单动态增删用法、异步增删与各功能 ProducerBox 投递示例
+  - ### 弹窗升级为弹窗栈：
+    - 支持多个弹窗叠放显示（`ESGUI_MAX_POPUP_DEPTH`，默认 4 层），新弹窗压入栈顶，输入优先路由到栈顶弹窗，关闭后自动回到下层弹窗；同一弹窗指针不重复压栈
+    - 示例演示两层弹窗嵌套：弹窗内再开弹窗、一次按键连关多层
+  - ### 延迟动作队列增加入队 API（`ESGUI_MenuCtrlQueueAction`）：
+    - 将动作排队，当前动作（如弹窗滑出动画）完成后由 `ESGUI_Tick` 依次取出执行
+    - 典型用法：弹窗条目回调中先把"关闭下层弹窗"入队，再返回"关闭当前弹窗"，实现一次按键连关多层弹窗
+  - ### 键盘组件（`ESGUI_KeyBoard`）：
+    - 字母页（QWERTY）/ 数字符号页切换、SHIFT 大小写、按钮或编码器导航
+    - 键宽按行均分、总高超高时自动垂直滚动（焦点行始终可见）
+  - ### 单行文本编辑框（`ESGUI_EditBox`）：
+    - 插入 / 退格 / 光标移动，文本超宽自动水平滚动，光标始终可见
+  - ### 多行文本编辑框（`ESGUI_MultiLineEditBox`）：
+    - `\n` 换行、光标上下左右移动（上下保持目标列）、显示区自动纵向滚动
+  - ### 键盘输入弹窗（`ESGUI_DefaultKeyBoardPopWindowCreate`）：
+    - 顶部单行输入框 + 底部键盘，按"确定"写入目标缓冲（按容量截断），"取消"丢弃
+  - ### 多行文本编辑页（`ESGUI_MultiLineEditPageCreate`）：
+    - 全屏：标题栏 + 多行文本区 + 底部键盘；直接编辑用户工作缓冲，BACK 返回即保存
+  - ### 无按钮长文本消息弹窗（`ESGUI_DefaultMessageLongTextPopWindowCreate`）：
+    - 文本按弹窗宽度自动换行（支持 UTF-8 与 `\n`），右侧纵向进度条显示浏览进度，UP/DOWN 滚动浏览，OK/BACK 任意键关闭
+  - ### 手动指定初始 focus_idx：
+    - Create 之后、Push/Show 之前设置 `page.focus_idx` / `pop_window.focus_idx` 即可，首次显示即高亮指定条目（焦点框/列表滚动/进度条直接到位）；越界值自动归位到最后一个条目
+  - ### 0 条目数菜单支持：
+    - 条目数为 0 的页面/弹窗安全空转（不做任何操作）：不绘制、不响应除 BACK 外的输入
+    - BACK 键仍可正常退出（页面 `ACT_POP_PAGE` / 弹窗 `ACT_CLOSE_POPUP`），不越界不崩溃
+  - ### ESP32-S3 WiFi 联网 demo
+- ### ↓↓↓ 修复 ↓↓↓
+  - 修复默认弹窗忽略弹窗条目 on_enter 回调返回动作的 BUG（弹窗条目返回的 `ACT_*` 动作现在会被框架执行）
+  - 修复动态菜单插入条目时不清除空的占位条目的 BUG（首次 Add/Insert 直接覆盖占位条目）
+
 
 ### v1.0.0
 - 首次提交
@@ -91,6 +108,23 @@
 - 所有示例工程已更新
 - BMP菜单已适配GIF
 
+
+### V2.2.0 (2026-8-22)
+- ### ↓↓↓ 新增 ↓↓↓
+  - ### 菜单/列表弹窗运行时增删条目：
+    - `ESGUI_MenuPageAddItem` / `ESGUI_MenuPageInsertItem` / `ESGUI_MenuPageRemoveItem`：操作静态条目数组（需设置 `item_cap`，自动重排布局并修正焦点）
+    - 动态文本菜单 `ESGUI_DynamicTextMenuCreate`：条目数组内部 malloc，销毁自动 free，`item_auto_expand` 容量自适应（增加不足自动 realloc 翻倍，删除超 2 倍自动缩容，实现真正的按需增删）
+    - `ESGUI_MENU_RUNTIME_ITEMS` 总开关：0=整套机制剔除（API 与 on_relayout 重排回调一并裁剪）
+  - ### 增删条目的异步版本（与 Async 家族一致）：
+    - `ESGUI_MenuPageAddItemAsync` / `ESGUI_MenuPageInsertItemAsync` / `ESGUI_MenuPageRemoveItemAsync`：从任意任务/中断投递，UI 线程 Tick 内执行；多任务并发用 ProducerBox 消息盒投递同结构命令
+  - ### 多线程方式独立开关：
+    - `ESGUI_ENABLE_CMD_QUEUE`：主命令队列方式（Async 入主队列），0=Async 退化为同步直调
+    - `ESGUI_ENABLE_PRODUCER_BOX`：生产者消息盒方式，0=消息盒类型/函数整体剔除
+  - ### 动态内存接口宏：
+    - `ESGUI_MALLOC` / `ESGUI_FREE` / `ESGUI_REALLOC`：可自定义内存分配器（如 ESP-IDF `heap_caps_*` 指定 PSRAM、自定义内存池），默认标准库
+  - README 补充：菜单动态增删用法、异步增删与各功能 ProducerBox 投递示例
+
+
 # ↓↓ESGUI介绍↓↓
 ESGUI（Embedded Simple GUI）是一个面向单色 OLED（如 SSD1315/SSD1306）的轻量级菜单框架。
 采用 **纯 C 编写**、**零浮点运算**、**零动态内存分配**、**零 RTOS 依赖**，专为资源受限的 MCU 设计。
@@ -114,6 +148,12 @@ ESGUI（Embedded Simple GUI）是一个面向单色 OLED（如 SSD1315/SSD1306�
 | **3D 线框渲染** | 定点透视投影（零浮点），模型变换 + 内置 3D 菜单页面 |
 | **Overlay 覆盖层** | 常驻组件层，独立于页面/弹窗，始终叠加在最上层，支持异步增删/显隐 |
 | **页面栈管理** | 最大 **8 级**菜单深度（可宏定义调整），支持 Push/Pop 过渡动画，动画期间自动屏蔽按键防误触 |
+| **弹窗栈** | 【V3.0.0】弹窗升级为栈结构（默认 **4 层**），支持多弹窗叠放，输入路由到栈顶，关闭后自动回落到下层弹窗 |
+| **延迟动作队列** | 【V3.0.0】动作可排队，在当前动作（弹窗滑出动画等）完成后依次执行，支持一次按键连关多层弹窗 |
+| **键盘与文本编辑** | 【V3.0.0】键盘组件（字母/数字符号页）+ 单行/多行文本编辑框 + 键盘输入弹窗 + 多行编辑页 |
+| **长文本弹窗** | 【V3.0.0】无按钮长文本弹窗：自动换行 + 右侧进度条 + UP/DOWN 滚动浏览 |
+| **空菜单保护** | 【V3.0.0】0 条目菜单/弹窗安全空转，BACK 可正常退出，不越界不崩溃 |
+| **手动初始焦点** | 【V3.0.0】Create 后、Push 前手动指定 `focus_idx`，首次显示即高亮指定条目 |
 | **虚函数表架构** | 每个页面/弹窗自带 `esgui_page_vtable_t`，所有显示效果与输入处理均可被用户完全覆盖 |
 | **模块化裁剪** | 通过宏开关编译时剔除不需要的页面类型、弹窗、动画曲线、3D 模块，极致压缩 Flash |
 | **UTF-8 文本** | 支持中英文混排，自动换行，超长文本自动滚动 |
@@ -127,14 +167,17 @@ ESGUI 采用**"核心框架 + 默认虚函数表"**的两层架构：
 ```
 ┌─────────────────────────────────────┐
 │  用户自定义页面（可选）                │  ← 继承 vtable，完全重写或局部覆盖
-│  ESGUI_DefaultConfig.c / .h         │  ← 默认虚函数表：文本菜单、BMP菜单、3D菜单、5种弹窗
+│  ESGUI_DefaultConfig.c / .h         │  ← 默认虚函数表：文本/BMP/3D菜单 + 多种弹窗（含键盘/长文本）
 │  ESGUI_DefaultConfig.h              │  ← 编译时配置（尺寸/开关/动画参数/多线程/队列）
 ├─────────────────────────────────────┤
 │  ESGUI.c / ESGUI.h                  │  ← 框架核心：生命周期、事件路由、Tick 驱动、命令队列
-│  ESGUI_Menu.c / .h                  │  ← 菜单控制器：页面栈、弹窗、动作分发
+│  ESGUI_Menu.c / .h                  │  ← 菜单控制器：页面栈、弹窗栈、延迟动作队列、动作分发
 │  ESGUI_Anim.c / .h                  │  ← 动画引擎：静态池、千分比插值、缓动曲线
 │  ESGUI_Event.c / .h                 │  ← 事件定义（按键/编码器/触摸）
 │  ESGUI_Widget.c / .h                │  ← 基础控件：进度条、焦点框、复选框等
+│  ESGUI_KeyBoard.c / .h              │  ← 键盘组件：字母/数字符号页、SHIFT、编码器导航
+│  ESGUI_EditBox.c / .h               │  ← 单行文本编辑框：插入/退格/光标/自动水平滚动
+│  ESGUI_MultiLineEditBox.c / .h      │  ← 多行文本编辑框：换行/光标移动/自动纵向滚动
 │  ESGUI_3D.c / .h                    │  ← 3D 线框渲染：定点投影、模型变换
 │  ESGUI_UseCanvas.c / .h             │  ← Canvas 适配层：绑定分块刷新到框架
 │  BSP/                               │  ← 底层绘图库：画布、图元、文本、位图
@@ -175,9 +218,12 @@ ESGUI_Git/
 │   ├── ESGUI_Menu.c / .h           # 菜单控制器：页面栈、弹窗、动作分发
 │   ├── ESGUI_Event.c / .h          # 事件定义（按键/编码器/触摸）
 │   ├── ESGUI_Anim.c / .h           # 动画引擎：缓动曲线、静态池、千分比插值
-│   ├── ESGUI_DefaultConfig.c / .h  # 【默认虚函数表】文本/BMP/3D 菜单 + 5 种弹窗（原 ESGUI_PageDefaltVtbl.c 更名）
+│   ├── ESGUI_DefaultConfig.c / .h  # 【默认虚函数表】文本/BMP/3D 菜单 + 多种弹窗（原 ESGUI_PageDefaltVtbl.c 更名）
 │   ├── ESGUI_DefaultConfig.h       # 【编译配置】尺寸、开关、动画参数、多线程、命令队列、3D
 │   ├── ESGUI_Widget.c / .h         # 控件：进度条、焦点框、复选框、单选框
+│   ├── ESGUI_KeyBoard.c / .h       # 【V3.0.0】键盘组件：字母/数字符号页、SHIFT、编码器导航
+│   ├── ESGUI_EditBox.c / .h        # 【V3.0.0】单行文本编辑框：插入/退格/光标/自动水平滚动
+│   ├── ESGUI_MultiLineEditBox.c/.h # 【V3.0.0】多行文本编辑框：换行/光标/自动纵向滚动
 │   ├── ESGUI_3D.c / .h             # 3D 线框渲染：定点透视投影、模型变换
 │   ├── ESGUI_UseCanvas.c / .h      # Canvas 适配层：绑定分块刷新到 ESGUI
 │   ├── BSP/
@@ -235,6 +281,26 @@ ESGUI_Git/
 | `ESGUI_ENABLE_POPUP_VALUE` | 1   | 数值调节弹窗 |
 | `ESGUI_ENABLE_POPUP_TEXTLIST` | 1   | 文本列表弹窗 |
 | `ESGUI_ENABLE_POPUP_BMPLIST` | 1   | 图片列表弹窗 |
+| `ESGUI_ENABLE_POPUP_LONGTEXT` | 1 | 【V3.0.0】无按钮长文本消息弹窗（自动换行 + 进度条 + 滚动浏览） |
+| `ESGUI_LONGTEXT_POPUP_MAX_LINES` | 64 | 【V3.0.0】长文本弹窗最大行数（行偏移表大小，超出并入最后一行截断显示） |
+
+### 键盘 / 文本编辑（V3.0.0）
+
+| 宏 | 默认值 | 说明 |
+|---|-----|---|
+| `ESGUI_ENABLE_KEYBOARD` | 1 | 【V3.0.0】键盘组件 + 单行文本框 + 键盘输入弹窗总开关；0=整套剔除 |
+| `ESGUI_KEY_BOARD_KEY_H` | 16 | 【V3.0.0】键盘键高（像素），键宽按每行键数自动均分；小屏（128x64）建议调小（如 10） |
+| `ESGUI_KEYBOARD_EDIT_MAX_LEN` | 32 | 【V3.0.0】键盘弹窗内部编辑缓冲长度（含 '\0'），按"确定"时按目标容量截断写入 |
+| `ESGUI_ENABLE_MULTILINE_EDIT` | 1 | 【V3.0.0】多行文本编辑框 + 多行编辑页总开关；0=整套剔除 |
+| `ESGUI_MULTILINE_EDIT_MAX_LINES` | 32 | 【V3.0.0】多行编辑框最大行数（行偏移表大小） |
+| `ESGUI_MULTILINE_EDIT_PAGE_POOL_SIZE` | 2 | 【V3.0.0】多行编辑页私有数据静态内存池槽位数（每槽约 100 字节 RAM） |
+
+### 弹窗栈 / 延迟动作（V3.0.0）
+
+| 宏 | 默认值 | 说明 |
+|---|-----|---|
+| `ESGUI_MAX_POPUP_DEPTH` | 4 | 【V3.0.0】弹窗栈最大深度（同时最多叠放的弹窗数） |
+| `ESGUI_MENU_PENDING_ACT_QUEUE_SIZE` | 8 | 【V3.0.0】延迟动作队列容量（排队等待依次执行的动作数） |
 
 ### 3D / Overlay / 绘制 / 动画
 
@@ -558,6 +624,148 @@ ESGUI_MenuPageRemoveItem(&dyn_page, 1);
 
 ---
 
+## 🪟 弹窗栈与延迟动作队列（V3.0.0）
+
+### 弹窗栈
+
+弹窗从"单弹窗"升级为**弹窗栈**：新弹窗压入栈顶，输入事件优先路由到栈顶弹窗，
+关闭栈顶后自动回到下层弹窗（同一弹窗指针不重复压栈）。最大叠放层数由
+`ESGUI_MAX_POPUP_DEPTH` 配置（默认 4）。
+
+```c
+ESGUI_PopWindow_T popup1, popup2;
+
+/* 第一层弹窗条目回调：再打开第二层弹窗（压入弹窗栈） */
+ESGUI_DefaultTextListPopWindowCreate(&popup2, 100, 45, items2, N);
+return (ESGUI_MenuAction_T){ACT_SHOW_POPUP, &popup2};
+```
+
+### 延迟动作队列
+
+`ESGUI_MenuCtrlQueueAction` 将动作排入延迟动作队列，当前动作（如弹窗滑出动画）完成后
+由 `ESGUI_Tick` 依次取出执行——用于"一次按键连关多层弹窗"等需要动作衔接的场景：
+
+```c
+/* 第二层弹窗条目回调：先把"关闭第一层"入队，再返回"关闭本层" → 一次按键连关两层 */
+static ESGUI_MenuAction_T stack_close_all_on_enter(ESGUI_MenuPage_T *page, void *arg) {
+    ESGUI_MenuCtrlQueueAction(&ui.menu_ctrl, (ESGUI_MenuAction_T){ACT_CLOSE_POPUP, ESGUI_NULL});
+    return (ESGUI_MenuAction_T){ACT_CLOSE_POPUP, ESGUI_NULL};
+}
+```
+
+- 队列容量由 `ESGUI_MENU_PENDING_ACT_QUEUE_SIZE` 配置（默认 8），满时或动作为 `ACT_NONE` 时忽略入队；
+- 动作触发 must_complete 动画时暂停出队，动画完成后的下一个 Tick 自动继续。
+
+---
+
+## ⌨️ 键盘与文本编辑（V3.0.0）
+
+由 `ESGUI_ENABLE_KEYBOARD` / `ESGUI_ENABLE_MULTILINE_EDIT` 开关控制（默认开启，可整体裁剪）。
+
+### 键盘组件（ESGUI_KeyBoard）
+
+字母页（QWERTY）与数字/符号页切换、SHIFT 大小写、按钮或编码器导航；
+键宽 = 区域宽 ÷ 本行键数自动均分，键盘总高超高时自动垂直滚动（焦点行始终可见）。
+
+```c
+ESGUI_KeyBoard_T kb;
+ESGUI_KeyBoardInit(&kb, ESGUI_KEY_BOARD_FONT, x, y, area_w, area_h, key_h);
+
+char ch; ESGUI_KeyAction_T act;
+if (ESGUI_KeyBoardHandleEvent(&kb, e, &ch, &act)) {   /* 输入事件：焦点移动或键触发 */
+    switch (act) { ... }                              /* ESGUI_KEY_CHAR / BACKSPACE / ENTER ... */
+}
+ESGUI_KeyBoardDraw(&c, &kb);                          /* 绘制（调用方先裁剪到键盘区域） */
+```
+
+### 单行文本编辑框（ESGUI_EditBox）
+
+```c
+char buf[32];
+ESGUI_EditBox_T eb;
+ESGUI_EditBoxInit(&eb, buf, sizeof(buf));   /* 用户提供缓冲，含 '\0' */
+ESGUI_EditBoxInsert(&eb, 'A');              /* 光标处插入（缓冲满返回 false） */
+ESGUI_EditBoxBackspace(&eb);                /* 退格 */
+ESGUI_EditBoxCursorMove(&eb, -1);           /* 光标左移 */
+ESGUI_EditBoxDraw(&c, &eb, x, y, w, font, caret_on);  /* 超宽自动水平滚动，光标始终可见 */
+```
+
+### 多行文本编辑框（ESGUI_MultiLineEditBox）
+
+```c
+char buf[128];
+ESGUI_MultiLineEditBox_T meb;
+ESGUI_MultiLineEditBoxInit(&meb, buf, sizeof(buf));
+ESGUI_MultiLineEditBoxInsert(&meb, '\n');   /* 支持换行 */
+ESGUI_MultiLineEditBoxCursorMove(&meb, -2); /* -2上 / -1左 / +1右 / +2下，上下保持目标列 */
+ESGUI_MultiLineEditBoxDraw(&c, &meb, x, y, w, h, font, caret_on);  /* 自动纵向滚动 */
+```
+
+### 键盘输入弹窗（默认弹窗）
+
+顶部单行输入框 + 底部键盘，宽/高由调用方指定（示例：128 全宽、下半屏 64 高）：
+
+```c
+static char kb_text[32];
+ESGUI_DefaultKeyBoardPopWindowCreate(&pop_window, 128, 64, kb_text, sizeof(kb_text), kb_text);
+return (ESGUI_MenuAction_T){ACT_SHOW_POPUP, &pop_window};
+/* 按"确定"把内部编辑结果写入 kb_text（按目标容量截断）；"取消"丢弃，不影响目标缓冲 */
+```
+
+### 多行文本编辑页（默认页面）
+
+全屏：标题栏 + 多行文本区 + 底部键盘，直接编辑用户工作缓冲，BACK 返回即保存：
+
+```c
+static ESGUI_MenuPage_T ml_page;
+static char ml_text[128];
+ESGUI_MultiLineEditPageCreate(&ml_page, "多行编辑", ml_text, sizeof(ml_text), ml_text);
+return (ESGUI_MenuAction_T){ACT_PUSH_PAGE, &ml_page};
+```
+
+---
+
+## 📄 无按钮长文本消息弹窗（V3.0.0）
+
+文本按弹窗宽度自动换行（支持 UTF-8 与 `\n`），右侧纵向进度条显示浏览进度，
+UP/DOWN 滚动浏览，OK/BACK 任意键关闭（与普通消息弹窗一致）：
+
+```c
+static const char long_msg[] =
+    "无按钮长文本弹窗演示。\n文本按弹窗宽度自动换行，支持中文 UTF-8 与英文混排……";
+
+ESGUI_DefaultMessageLongTextPopWindowCreate(&pop_window, long_msg, 110, 60);
+return (ESGUI_MenuAction_T){ACT_SHOW_POPUP, &pop_window};
+```
+
+最大行数由 `ESGUI_LONGTEXT_POPUP_MAX_LINES` 配置（默认 64，超出并入最后一行截断显示）。
+
+---
+
+## 🎯 手动指定初始 focus_idx 与 0 条目菜单（V3.0.0）
+
+### 手动指定初始焦点
+
+所有默认菜单/弹窗（文本/BMP/3D 菜单、文本列表/BMP 列表/键盘/长文本弹窗）均支持
+在 **Create 之后、Push/Show 之前** 手动设置初始焦点，首次显示即高亮指定条目：
+
+```c
+ESGUI_DefaultTextListPopWindowCreate(&pop_window, 100, 50, items, N);
+pop_window.focus_idx = 2;                 /* 首次显示焦点框直接落在条目 2 */
+return (ESGUI_MenuAction_T){ACT_SHOW_POPUP, &pop_window};
+```
+
+- 焦点框/列表滚动/进度条等布局在首次渲染时按 `focus_idx` 直接落位，无需按键触发修正；
+- 越界值自动归位到最后一个条目（`focus_idx >= item_num` 时收敛到 `item_num - 1`）。
+
+### 0 条目数菜单
+
+条目数为 0 的页面/弹窗**安全空转**（不做任何操作）：不绘制、不响应除 BACK 外的任何输入，
+BACK 键仍可正常退出（页面返回 `ACT_POP_PAGE`、弹窗返回 `ACT_CLOSE_POPUP`），不会越界或崩溃。
+适用于"先进入空页面、再由运行时增删 API 填充条目"等场景。
+
+---
+
 ## 🧊 3D 线框渲染
 
 `ESGUI_3D.c/.h` 提供零浮点的定点透视投影线框渲染：
@@ -723,11 +931,14 @@ BMP 菜单使用的图片同样需为 **页式 1bpp**，可用上述工具生成
 `example/` 目录包含多个可编译工程模板（STM32 HAL / 标准库 / ESP-IDF / 思澈），使用框架默认虚函数表，演示：
 
 - 文本菜单 / BMP 菜单 / 3D 菜单切换
-- 五种弹窗
+- 多种弹窗（消息/布尔/值/文本列表/图片列表/键盘输入/长文本，含滚动标题版本）
+- 弹窗栈嵌套演示（弹窗内再开弹窗、延迟动作队列一次按键连关多层）
+- 键盘输入、单行/多行文本编辑
 - 长文本滚动与页面过渡动画
 - 分块刷新绑定 SSD1315
 - 多线程（Async + 生产者收件箱，基于 FreeRTOS / RT-Thread）
 - 3D 线框图绘制与旋转
+- 【V3.0.0】ESP32-S3 WiFi 联网 demo
 
 V2.0.0 起，示例工程的用户代码统一按功能分目录组织：
 
